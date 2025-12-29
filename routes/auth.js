@@ -126,8 +126,9 @@ router.post("/register", async (req, res) => {
 
     const hashed = await bcrypt.hash(password, 12);
 
-    // كود تفعيل 6 أرقام
-    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    // كود تفعيل 6 أرقام (معلق: تم تعطيل التحقق من OTP مؤقتًا)
+    // const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const verificationCode = "000000"; // OTP معطل مؤقتًا
 
     const doctorSafeName = role === "doctor" ? ensureDoctorPrefix(name) : name;
 
@@ -163,16 +164,11 @@ router.post("/register", async (req, res) => {
       await user.save();
     }
 
-    // إرسال كود التفعيل SMS
-    try {
-      await sendSms(user.phone, `رمز التفعيل الخاص بك هو: ${verificationCode}`);
-    } catch (smsErr) {
-      console.error("SMS error:", smsErr.message);
-      // نستمر لكن نبلغ المستخدم
-    }
+
+    // تعليق: تم تعطيل إرسال كود التفعيل مؤقتًا
 
     return res.status(201).json({
-      message: "تم إنشاء الحساب. تم إرسال رمز التفعيل إلى جوالك.",
+      message: "تم إنشاء الحساب بنجاح (بدون تحقق OTP)",
       phone: user.phone,
       role: user.role,
       doctorProfile: user.doctorProfile,
@@ -192,25 +188,17 @@ router.post("/verify", async (req, res) => {
   try {
     const { phone, code } = req.body;
 
-    if (!phone || !code) {
-      return res.status(400).json({ message: "رقم الجوال والرمز مطلوبان" });
-    }
 
-    if (!isValidPhone(phone)) {
-      return res.status(400).json({ message: "صيغة رقم الجوال غير صحيحة" });
+    // تعليق: تم تعطيل التحقق من كود التفعيل مؤقتًا
+    const { phone } = req.body;
+    if (!phone) {
+      return res.status(400).json({ message: "رقم الجوال مطلوب" });
     }
-
     const user = await User.findOne({ phone: normalizePhone(phone) });
     if (!user) return res.status(400).json({ message: "المستخدم غير موجود" });
-
     if (user.phoneVerified) {
       return res.status(400).json({ message: "رقم الجوال مُفعّل مسبقًا" });
     }
-
-    if (user.verificationCode !== code) {
-      return res.status(400).json({ message: "رمز التفعيل غير صحيح" });
-    }
-
     user.phoneVerified = true;
     user.verificationCode = null;
     await user.save();
@@ -327,36 +315,19 @@ router.post("/login", async (req, res) => {
       return res.status(401).json({ message: "رقم الجوال أو كلمة المرور غير صحيحة" });
     }
 
-    // إذا ما مفعل الإيميل
-    if (!user.phoneVerified) {
-      return res.status(403).json({
-        message: "يجب تفعيل رقم الجوال قبل تسجيل الدخول.",
-      });
-    }
-
-    // نولّد كود دخول 6 أرقام
-    const loginCode = Math.floor(100000 + Math.random() * 900000).toString();
-    const expires = new Date(Date.now() + 10 * 60 * 1000); // صالح 10 دقائق
-
-    // نخزن الكود بالداتابيس
-    user.loginCode = loginCode;
-    user.loginCodeExpires = expires;
-    await user.save();
-
-    // نرسل الكود للإيميل
-    try {
-      await sendSms(user.phone, `رمز الدخول الخاص بك هو: ${loginCode}`);
-    } catch (err) {
-      console.error("Error sending login code SMS:", err.message);
-      return res
-        .status(500)
-        .json({ message: "تعذر إرسال رمز الدخول إلى جوالك" });
-    }
-
+    // تعليق: تم تعطيل التحقق بخطوتين مؤقتًا
     return res.json({
-      message: "تم إرسال رمز الدخول إلى جوالك.",
+      message: "تم تسجيل الدخول بنجاح (بدون تحقق OTP)",
       phone: user.phone,
-      step: "CODE_SENT",
+      user: {
+        id: user._id,
+        name: user.name,
+        phone: user.phone,
+        role: user.role,
+        doctorProfile: user.doctorProfile,
+        age: user.age,
+      },
+      token: generateToken(user),
     });
   } catch (err) {
     console.error("Login error:", err);
@@ -371,49 +342,17 @@ router.post("/login", async (req, res) => {
  */
 router.post("/login/verify", async (req, res) => {
   try {
-    const { phone, code } = req.body;
-
-    if (!phone || !code) {
-      return res.status(400).json({ message: "رقم الجوال والرمز مطلوبان" });
+    // تعليق: تم تعطيل التحقق من كود الدخول مؤقتًا
+    const { phone } = req.body;
+    if (!phone) {
+      return res.status(400).json({ message: "رقم الجوال مطلوب" });
     }
-
-    if (!isValidPhone(phone)) {
-      return res.status(400).json({ message: "صيغة رقم الجوال غير صحيحة" });
-    }
-
     const user = await User.findOne({ phone: normalizePhone(phone) });
-
     if (!user) {
       return res.status(400).json({ message: "المستخدم غير موجود" });
     }
-
-    if (!user.loginCode || !user.loginCodeExpires) {
-      return res.status(400).json({ message: "لم يتم طلب رمز دخول" });
-    }
-
-    // هل انتهت صلاحية الكود؟
-    if (user.loginCodeExpires < new Date()) {
-      return res.status(400).json({ message: "انتهت صلاحية رمز الدخول" });
-    }
-
-    // هل الكود غلط؟
-    if (user.loginCode !== code) {
-      return res.status(400).json({ message: "رمز الدخول غير صحيح" });
-    }
-
-    // الكود صحيح → نمسحه ونرجّع توكن
-    user.loginCode = null;
-    user.loginCodeExpires = null;
-    await user.save();
-
-    const token = jwt.sign(
-      { id: user._id, phone: user.phone, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
-    );
-
     return res.json({
-      message: "تم تسجيل الدخول بنجاح",
+      message: "تم تسجيل الدخول بنجاح (بدون تحقق OTP)",
       user: {
         id: user._id,
         name: user.name,
@@ -422,7 +361,7 @@ router.post("/login/verify", async (req, res) => {
         doctorProfile: user.doctorProfile,
         age: user.age,
       },
-      token,
+      token: generateToken(user),
     });
   } catch (err) {
     console.error("Login verify error:", err);

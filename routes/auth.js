@@ -186,9 +186,6 @@ router.post("/register", async (req, res) => {
  */
 router.post("/verify", async (req, res) => {
   try {
-    const { phone, code } = req.body;
-
-
     // تعليق: تم تعطيل التحقق من كود التفعيل مؤقتًا
     const { phone } = req.body;
     if (!phone) {

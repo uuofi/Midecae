@@ -126,9 +126,8 @@ router.post("/register", async (req, res) => {
 
     const hashed = await bcrypt.hash(password, 12);
 
-    // كود تفعيل 6 أرقام (معلق: تم تعطيل التحقق من OTP مؤقتًا)
-    // const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
-    const verificationCode = "000000"; // OTP معطل مؤقتًا
+    // كود تفعيل 6 أرقام
+    // const verificationCode = Math.floor(100000 + Math.random() * 900000).toString(); // OTP DISABLED
 
     const doctorSafeName = role === "doctor" ? ensureDoctorPrefix(name) : name;
 
@@ -137,8 +136,8 @@ router.post("/register", async (req, res) => {
       phone: normalizedPhone,
       email: email?.toLowerCase?.(),
       password: hashed,
-      phoneVerified: false,
-      verificationCode,
+      phoneVerified: true, // OTP DISABLED
+      // verificationCode,
       role,
       age: age !== undefined ? Number(age) : undefined,
     });
@@ -165,13 +164,21 @@ router.post("/register", async (req, res) => {
     }
 
 
-    // تعليق: تم تعطيل إرسال كود التفعيل مؤقتًا
+    // إرسال كود التفعيل SMS
+    // try {
+    //   await sendSms(user.phone, `رمز التفعيل الخاص بك هو: ${verificationCode}`);
+    // } catch (smsErr) {
+    //   console.error("SMS error:", smsErr.message);
+    //   // نستمر لكن نبلغ المستخدم
+    // }
 
+    // تجاوز التحقق وادخال المستخدم مباشرة
     return res.status(201).json({
-      message: "تم إنشاء الحساب بنجاح (بدون تحقق OTP)",
+      message: "تم إنشاء الحساب بنجاح.",
       phone: user.phone,
       role: user.role,
       doctorProfile: user.doctorProfile,
+      // تم تفعيل الحساب مباشرة بدون OTP
     });
   } catch (err) {
     console.error("Register error:", err);
@@ -185,8 +192,8 @@ router.post("/register", async (req, res) => {
  * @access  Public
  */
 router.post("/verify", async (req, res) => {
+  // تم تعطيل التحقق من OTP مؤقتاً
   try {
-    // تعليق: تم تعطيل التحقق من كود التفعيل مؤقتًا
     const { phone } = req.body;
     if (!phone) {
       return res.status(400).json({ message: "رقم الجوال مطلوب" });
@@ -199,7 +206,6 @@ router.post("/verify", async (req, res) => {
     user.phoneVerified = true;
     user.verificationCode = null;
     await user.save();
-
     if (user.role === "doctor") {
       const profile = await DoctorProfile.findOne({ user: user._id });
       if (profile) {
@@ -208,12 +214,9 @@ router.post("/verify", async (req, res) => {
         await profile.save();
       }
     }
-
-    // نولد توكن بعد التفعيل (اختياري)
     const token = generateToken(user);
-
     return res.json({
-      message: "تم تفعيل رقم الجوال بنجاح",
+      message: "تم تفعيل رقم الجوال مباشرة (بدون رمز)",
       user: {
         id: user._id,
         name: user.name,
@@ -236,43 +239,8 @@ router.post("/verify", async (req, res) => {
  * @access  Public
  */
 router.post("/resend", async (req, res) => {
-  try {
-    const { phone } = req.body;
-
-    if (!phone) {
-      return res.status(400).json({ message: "رقم الجوال مطلوب" });
-    }
-
-    if (!isValidPhone(phone)) {
-      return res.status(400).json({ message: "صيغة رقم الجوال غير صحيحة" });
-    }
-
-    const user = await User.findOne({ phone: normalizePhone(phone) });
-
-    if (!user) {
-      return res.status(404).json({ message: "المستخدم غير موجود" });
-    }
-
-    if (user.phoneVerified) {
-      return res.status(400).json({ message: "رقم الجوال مُفعّل مسبقًا" });
-    }
-
-    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
-    user.verificationCode = verificationCode;
-    await user.save();
-
-    try {
-      await sendSms(user.phone, `رمز التفعيل الخاص بك هو: ${verificationCode}`);
-    } catch (smsErr) {
-      console.error("Resend SMS error:", smsErr.message);
-      return res.status(500).json({ message: "تعذر إرسال رمز التفعيل" });
-    }
-
-    return res.json({ message: "تم إرسال رمز التفعيل إلى الجوال" });
-  } catch (err) {
-    console.error("Resend verify error:", err);
-    return res.status(500).json({ message: "خطأ في الخادم، حاول لاحقًا" });
-  }
+  // تم تعطيل إعادة إرسال رمز التفعيل مؤقتاً
+  return res.status(200).json({ message: "تم تعطيل إرسال رمز التفعيل مؤقتاً" });
 });
 
 /**
@@ -312,10 +280,21 @@ router.post("/login", async (req, res) => {
       return res.status(401).json({ message: "رقم الجوال أو كلمة المرور غير صحيحة" });
     }
 
-    // تعليق: تم تعطيل التحقق بخطوتين مؤقتًا
+    // إذا ما مفعل الإيميل
+    if (!user.phoneVerified) {
+      return res.status(403).json({
+        message: "يجب تفعيل رقم الجوال قبل تسجيل الدخول.",
+      });
+    }
+
+    // تجاوز خطوة إرسال كود الدخول
+    const token = jwt.sign(
+      { id: user._id, phone: user.phone, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
+    );
     return res.json({
-      message: "تم تسجيل الدخول بنجاح (بدون تحقق OTP)",
-      phone: user.phone,
+      message: "تم تسجيل الدخول مباشرة (بدون رمز)",
       user: {
         id: user._id,
         name: user.name,
@@ -324,7 +303,7 @@ router.post("/login", async (req, res) => {
         doctorProfile: user.doctorProfile,
         age: user.age,
       },
-      token: generateToken(user),
+      token,
     });
   } catch (err) {
     console.error("Login error:", err);
@@ -338,8 +317,8 @@ router.post("/login", async (req, res) => {
  * -----------------------------------------
  */
 router.post("/login/verify", async (req, res) => {
+  // تم تعطيل التحقق من كود الدخول مؤقتاً
   try {
-    // تعليق: تم تعطيل التحقق من كود الدخول مؤقتًا
     const { phone } = req.body;
     if (!phone) {
       return res.status(400).json({ message: "رقم الجوال مطلوب" });
@@ -348,8 +327,13 @@ router.post("/login/verify", async (req, res) => {
     if (!user) {
       return res.status(400).json({ message: "المستخدم غير موجود" });
     }
+    const token = jwt.sign(
+      { id: user._id, phone: user.phone, role: user.role },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
+    );
     return res.json({
-      message: "تم تسجيل الدخول بنجاح (بدون تحقق OTP)",
+      message: "تم تسجيل الدخول مباشرة (بدون رمز)",
       user: {
         id: user._id,
         name: user.name,
@@ -358,7 +342,7 @@ router.post("/login/verify", async (req, res) => {
         doctorProfile: user.doctorProfile,
         age: user.age,
       },
-      token: generateToken(user),
+      token,
     });
   } catch (err) {
     console.error("Login verify error:", err);

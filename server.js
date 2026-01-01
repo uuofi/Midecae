@@ -82,6 +82,9 @@ app.use("/api/blocks", require("./routes/blocks"));
 // Admin routes (protected)
 app.use("/api/admin", require("./routes/admin"));
 
+// Serve uploaded files (e.g., chat images)
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
+
 // 🔔 Notifications routes
 const { router: notificationsRouter } = require("./routes/notifications");
 app.use("/api/notifications", notificationsRouter);

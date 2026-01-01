@@ -500,10 +500,16 @@ router.get("/me", authMiddleware, async (req, res) => {
     }
 
     const specialtySlug = profile.specialtySlug;
+    // IMPORTANT: doctors should see
+    // 1) their own appointments (any status)
+    // 2) unassigned pending appointments in their specialty ("specialty queue")
+    // Do NOT include appointments already assigned to other doctors.
     const appointmentFilter = {
       $or: [
         { doctorProfile: profile._id },
-        ...(specialtySlug ? [{ specialtySlug }] : []),
+        ...(specialtySlug
+          ? [{ specialtySlug, doctorProfile: null, status: "pending" }]
+          : []),
       ],
     };
 
@@ -546,10 +552,14 @@ router.get("/appointments", authMiddleware, async (req, res) => {
     }
 
     const specialtySlug = profile.specialtySlug;
+    // Only include unassigned PENDING appointments for the specialty queue.
+    // Otherwise, a new doctor account would see other doctors' bookings.
     const appointmentFilter = {
       $or: [
         { doctorProfile: profile._id },
-        ...(specialtySlug ? [{ specialtySlug }] : []),
+        ...(specialtySlug
+          ? [{ specialtySlug, doctorProfile: null, status: "pending" }]
+          : []),
       ],
     };
 

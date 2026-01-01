@@ -4,6 +4,86 @@ const DoctorProfile = require("../models/DoctorProfile");
 
 const router = express.Router();
 
+// Admin: list doctors (includes pending/inactive)
+router.get(
+  "/doctors",
+  authMiddleware,
+  authMiddleware.requireRole("admin"),
+  async (req, res) => {
+    try {
+      const { status } = req.query;
+      const filter = {};
+      if (status) filter.status = status;
+
+      const doctors = await DoctorProfile.find(filter)
+        .populate("user", "name email phone")
+        .sort({ createdAt: -1 });
+
+      return res.json({ doctors });
+    } catch (err) {
+      console.error("Admin doctors list error:", err?.message);
+      return res.status(500).json({ message: "Server error" });
+    }
+  }
+);
+
+// Admin: update doctor status (activate/deactivate/pend)
+router.patch(
+  "/doctors/:id/status",
+  authMiddleware,
+  authMiddleware.requireRole("admin"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { status } = req.body || {};
+
+      const allowed = new Set(["pending", "active", "inactive"]);
+      if (!allowed.has(status)) {
+        return res.status(400).json({ message: "Invalid status" });
+      }
+
+      const doctor = await DoctorProfile.findById(id);
+      if (!doctor) return res.status(404).json({ message: "Doctor not found" });
+
+      doctor.status = status;
+      await doctor.save();
+
+      return res.json({ message: "Status updated", doctor });
+    } catch (err) {
+      console.error("Admin doctor status update error:", err?.message);
+      return res.status(500).json({ message: "Server error" });
+    }
+  }
+);
+
+// Admin: update doctor booking availability
+router.patch(
+  "/doctors/:id/booking",
+  authMiddleware,
+  authMiddleware.requireRole("admin"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      const { isAcceptingBookings } = req.body || {};
+
+      if (typeof isAcceptingBookings !== "boolean") {
+        return res.status(400).json({ message: "isAcceptingBookings must be boolean" });
+      }
+
+      const doctor = await DoctorProfile.findById(id);
+      if (!doctor) return res.status(404).json({ message: "Doctor not found" });
+
+      doctor.isAcceptingBookings = isAcceptingBookings;
+      await doctor.save();
+
+      return res.json({ message: "Booking availability updated", doctor });
+    } catch (err) {
+      console.error("Admin doctor booking update error:", err?.message);
+      return res.status(500).json({ message: "Server error" });
+    }
+  }
+);
+
 // Update doctor's subscription (admin only)
 router.patch(
   "/doctors/:id/subscription",
@@ -47,8 +127,6 @@ router.patch(
   }
 );
 
-module.exports = router;
-
 // Admin: list patients
 router.get(
   "/patients",
@@ -88,3 +166,5 @@ router.get(
     }
   }
 );
+
+module.exports = router;

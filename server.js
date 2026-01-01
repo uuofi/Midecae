@@ -5,6 +5,8 @@ const cors = require("cors");
 const dotenv = require("dotenv");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
+const path = require("path");
+const fs = require("fs");
 const connectDB = require("./config/db");
 const jwt = require("jsonwebtoken");
 const { Server } = require("socket.io");
@@ -20,13 +22,17 @@ connectDB();
 const app = express();
 const server = http.createServer(app);
 
-// CORS: allow configured origins only (comma-separated in env) or fallback to '*'
+// CORS: allow configured origins only (comma-separated in env) or fallback to allow-all.
+// NOTE: In the `cors` package, an array like ["*"] does NOT mean allow-all.
 const allowedOrigins = process.env.CORS_ORIGINS
-  ? process.env.CORS_ORIGINS.split(",").map((o) => o.trim())
-  : ["*"];
+  ? process.env.CORS_ORIGINS.split(",").map((o) => o.trim()).filter(Boolean)
+  : null;
+
+const corsOriginOption =
+  !allowedOrigins || allowedOrigins.includes("*") ? "*" : allowedOrigins;
 app.use(
   cors({
-    origin: allowedOrigins,
+    origin: corsOriginOption,
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
   })
@@ -78,10 +84,36 @@ app.use("/api/admin", require("./routes/admin"));
 const { router: notificationsRouter } = require("./routes/notifications");
 app.use("/api/notifications", notificationsRouter);
 
+// Optional: Serve Admin dashboard from the same server (same-origin)
+// Usage:
+// 1) Build Admin: (in Admin/) npm run build
+// 2) Set env SERVE_ADMIN=true
+// 3) (Optional) ADMIN_DIST=/absolute/path/to/Admin/dist
+if (String(process.env.SERVE_ADMIN || "").toLowerCase() === "true") {
+  const adminDist = process.env.ADMIN_DIST
+    ? path.resolve(process.env.ADMIN_DIST)
+    : path.resolve(__dirname, "..", "Admin", "dist");
+
+  const indexHtml = path.join(adminDist, "index.html");
+  if (fs.existsSync(indexHtml)) {
+    app.use(express.static(adminDist));
+    // SPA fallback (do not intercept /api/*)
+    app.get(/^\/(?!api\/).*/, (req, res) => {
+      res.sendFile(indexHtml);
+    });
+    console.log("Serving Admin dashboard from:", adminDist);
+  } else {
+    console.warn(
+      "SERVE_ADMIN=true لكن لم يتم العثور على Admin dist. Build Admin أولاً:",
+      indexHtml
+    );
+  }
+}
+
 const PORT = process.env.PORT || 5001;
 const io = new Server(server, {
   cors: {
-    origin: allowedOrigins,
+    origin: corsOriginOption,
     methods: ["GET", "POST"],
     allowedHeaders: ["Authorization"],
   },

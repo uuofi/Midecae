@@ -127,7 +127,9 @@ router.post("/register", async (req, res) => {
     const hashed = await bcrypt.hash(password, 12);
 
     // كود تفعيل 6 أرقام
-    // const verificationCode = Math.floor(100000 + Math.random() * 900000).toString(); // OTP DISABLED
+    // كود التحقق هو آخر 10 أرقام من رقم الهاتف (يبدأ من 7)
+    // كود تفعيل 6 أرقام عشوائي
+    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
 
     const doctorSafeName = role === "doctor" ? ensureDoctorPrefix(name) : name;
 
@@ -136,8 +138,8 @@ router.post("/register", async (req, res) => {
       phone: normalizedPhone,
       email: email?.toLowerCase?.(),
       password: hashed,
-      phoneVerified: true, // OTP DISABLED
-      // verificationCode,
+      phoneVerified: false,
+      verificationCode,
       role,
       age: age !== undefined ? Number(age) : undefined,
     });
@@ -164,13 +166,9 @@ router.post("/register", async (req, res) => {
     }
 
 
-    // إرسال كود التفعيل SMS
-    // try {
-    //   await sendSms(user.phone, `رمز التفعيل الخاص بك هو: ${verificationCode}`);
-    // } catch (smsErr) {
-    //   console.error("SMS error:", smsErr.message);
-    //   // نستمر لكن نبلغ المستخدم
-    // }
+
+    // طباعة كود التحقق في التيرمنال
+    console.log(`OTP for ${user.phone}: ${verificationCode}`);
 
     // تجاوز التحقق وادخال المستخدم مباشرة
     return res.status(201).json({

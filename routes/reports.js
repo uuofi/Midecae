@@ -1,6 +1,7 @@
 const express = require("express");
 const jwt = require("jsonwebtoken");
 const PDFDocument = require("pdfkit");
+const ExcelJS = require("exceljs");
 const authMiddleware = require("../middleware/authMiddleware");
 const DoctorProfile = require("../models/DoctorProfile");
 const User = require("../models/User");
@@ -16,6 +17,120 @@ const normalizeDateIso = (value) => {
   }
   candidate.setHours(0, 0, 0, 0);
   return candidate.toISOString().split("T")[0];
+};
+
+const normalizeMonthIso = (value) => {
+  if (!value) {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  }
+  const raw = String(value).trim();
+  // allow YYYY-MM or any date string
+  if (/^\d{4}-\d{2}$/.test(raw)) return raw;
+  const dt = new Date(raw);
+  if (Number.isNaN(dt.getTime())) {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  }
+  return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}`;
+};
+
+const getMonthRange = (monthIso) => {
+  const [y, m] = String(monthIso).split("-");
+  const year = Number(y);
+  const month = Number(m);
+  const start = new Date(Date.UTC(year, month - 1, 1));
+  const end = new Date(Date.UTC(year, month, 1));
+  return {
+    startIso: start.toISOString().split("T")[0],
+    endIso: end.toISOString().split("T")[0],
+  };
+};
+
+const statusLabels = {
+  pending: "قيد التأكيد",
+  confirmed: "مقبولة",
+  completed: "مكتملة",
+  cancelled: "ملغاة",
+};
+
+const toMoney = (value) => {
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) ? n : 0;
+};
+
+const buildExcelWorkbook = ({ title, doctorName, periodLabel, rows, totals }) => {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = "MediCare";
+  workbook.created = new Date();
+
+  const sheet = workbook.addWorksheet("Report", {
+    views: [{ rightToLeft: true }],
+    pageSetup: { fitToPage: true, fitToWidth: 1, fitToHeight: 0 },
+  });
+
+  sheet.addRow([title]);
+  sheet.addRow([`اسم الطبيب: ${doctorName || "-"}`]);
+  sheet.addRow([periodLabel]);
+  sheet.addRow([]);
+
+  const headerRow = sheet.addRow([
+    "اسم المريض",
+    "العمر",
+    "الحالة المرضية",
+    "سعر الكشفية",
+    "تاريخ الحجز",
+    "وقت الحجز",
+    "الحالة",
+  ]);
+  headerRow.font = { bold: true };
+
+  rows.forEach((r) => {
+    sheet.addRow([
+      r.patientName || "مراجع",
+      r.patientAge ?? "-",
+      r.condition || "-",
+      r.price,
+      r.date || "-",
+      r.time || "-",
+      statusLabels[r.status] || r.status || "-",
+    ]);
+  });
+
+  sheet.addRow([]);
+  const totalsRow1 = sheet.addRow([
+    "",
+    "",
+    "",
+    "",
+    "",
+    "مجموع الحجوزات (غير ملغاة)",
+    totals.billableCount,
+  ]);
+  totalsRow1.font = { bold: true };
+  const totalsRow2 = sheet.addRow([
+    "",
+    "",
+    "",
+    "",
+    "",
+    "مجموع الفلوس (غير ملغاة)",
+    totals.totalMoney,
+  ]);
+  totalsRow2.font = { bold: true };
+
+  // Basic column widths
+  sheet.columns = [
+    { width: 22 },
+    { width: 10 },
+    { width: 35 },
+    { width: 14 },
+    { width: 16 },
+    { width: 12 },
+    { width: 14 },
+  ];
+
+  return workbook;
 };
 
 const amiriRegularPath = require.resolve(
@@ -313,6 +428,232 @@ router.get("/download/daily", async (req, res) => {
   });
 
   doc.end();
+});
+
+// =========================
+// Excel reports (daily + monthly)
+// =========================
+
+router.post("/doctors/me/daily-bookings/excel/link", authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user || user.role !== "doctor") {
+      return res.status(403).json({ message: "Restricted to doctors" });
+    }
+
+    const profile = await DoctorProfile.findOne({ user: user._id });
+    if (!profile) {
+      return res.status(404).json({ message: "Doctor profile not found" });
+    }
+
+    const dateIso = normalizeDateIso(req.body?.date || req.query?.date);
+    const payload = {
+      type: "daily-report-excel",
+      userId: user._id.toString(),
+      doctorProfileId: profile._id.toString(),
+      date: dateIso,
+    };
+    const downloadToken = jwt.sign(payload, process.env.JWT_SECRET, {
+      expiresIn: "10m",
+    });
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    const downloadUrl = `${baseUrl}/api/reports/download/daily-excel?token=${encodeURIComponent(
+      downloadToken
+    )}`;
+
+    return res.json({ downloadUrl, expiresIn: 600, date: dateIso });
+  } catch (err) {
+    console.error("Daily excel link error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.get("/download/daily-excel", async (req, res) => {
+  const { token } = req.query || {};
+  if (!token) {
+    return res.status(400).json({ message: "Download token is required" });
+  }
+
+  let payload;
+  try {
+    payload = jwt.verify(token, process.env.JWT_SECRET);
+  } catch (err) {
+    console.error("Excel download token error:", err.message);
+    return res.status(401).json({ message: "Invalid or expired download token" });
+  }
+
+  if (payload.type !== "daily-report-excel") {
+    return res.status(400).json({ message: "Invalid report token" });
+  }
+
+  const profile = await DoctorProfile.findById(payload.doctorProfileId);
+  if (!profile || profile.user.toString() !== payload.userId) {
+    return res.status(403).json({ message: "Unauthorized report download" });
+  }
+
+  const doctorUser = await User.findById(payload.userId).select("name email");
+  const targetDate = normalizeDateIso(payload.date);
+
+  const appointments = await Appointment.find({
+    doctorProfile: profile._id,
+    appointmentDateIso: targetDate,
+    status: { $in: ["pending", "confirmed", "completed", "cancelled"] },
+  })
+    .populate("user", "name age")
+    .sort({ appointmentTimeValue: 1, createdAt: 1 })
+    .lean();
+
+  const consultationFee = toMoney(profile.consultationFee);
+  const rows = appointments.map((a) => {
+    const price = toMoney(a?.service?.price) || consultationFee;
+    return {
+      patientName: a.user?.name,
+      patientAge: a.user?.age,
+      condition: (a.notes || "").trim(),
+      price,
+      date: a.appointmentDate || a.appointmentDateIso,
+      time: a.appointmentTime || a.appointmentTimeValue,
+      status: a.status,
+      billable: a.status !== "cancelled" ? price : 0,
+    };
+  });
+
+  const totals = {
+    billableCount: rows.filter((r) => r.status !== "cancelled").length,
+    totalMoney: rows.reduce((sum, r) => sum + (r.status !== "cancelled" ? toMoney(r.billable) : 0), 0),
+  };
+
+  const workbook = buildExcelWorkbook({
+    title: "تقرير الحجوزات اليومية (Excel)",
+    doctorName: profile.displayName || doctorUser?.name || doctorUser?.email || "-",
+    periodLabel: `التاريخ: ${targetDate}`,
+    rows,
+    totals,
+  });
+
+  res.setHeader(
+    "Content-Type",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  );
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="daily-bookings-${targetDate}.xlsx"`
+  );
+
+  await workbook.xlsx.write(res);
+  res.end();
+});
+
+router.post("/doctors/me/monthly-bookings/excel/link", authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user || user.role !== "doctor") {
+      return res.status(403).json({ message: "Restricted to doctors" });
+    }
+
+    const profile = await DoctorProfile.findOne({ user: user._id });
+    if (!profile) {
+      return res.status(404).json({ message: "Doctor profile not found" });
+    }
+
+    const monthIso = normalizeMonthIso(req.body?.month || req.query?.month);
+    const payload = {
+      type: "monthly-report-excel",
+      userId: user._id.toString(),
+      doctorProfileId: profile._id.toString(),
+      month: monthIso,
+    };
+
+    const downloadToken = jwt.sign(payload, process.env.JWT_SECRET, {
+      expiresIn: "10m",
+    });
+    const baseUrl = `${req.protocol}://${req.get("host")}`;
+    const downloadUrl = `${baseUrl}/api/reports/download/monthly-excel?token=${encodeURIComponent(
+      downloadToken
+    )}`;
+
+    return res.json({ downloadUrl, expiresIn: 600, month: monthIso });
+  } catch (err) {
+    console.error("Monthly excel link error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+router.get("/download/monthly-excel", async (req, res) => {
+  const { token } = req.query || {};
+  if (!token) {
+    return res.status(400).json({ message: "Download token is required" });
+  }
+
+  let payload;
+  try {
+    payload = jwt.verify(token, process.env.JWT_SECRET);
+  } catch (err) {
+    console.error("Monthly excel token error:", err.message);
+    return res.status(401).json({ message: "Invalid or expired download token" });
+  }
+
+  if (payload.type !== "monthly-report-excel") {
+    return res.status(400).json({ message: "Invalid report token" });
+  }
+
+  const profile = await DoctorProfile.findById(payload.doctorProfileId);
+  if (!profile || profile.user.toString() !== payload.userId) {
+    return res.status(403).json({ message: "Unauthorized report download" });
+  }
+
+  const doctorUser = await User.findById(payload.userId).select("name email");
+  const monthIso = normalizeMonthIso(payload.month);
+  const { startIso, endIso } = getMonthRange(monthIso);
+
+  const appointments = await Appointment.find({
+    doctorProfile: profile._id,
+    appointmentDateIso: { $gte: startIso, $lt: endIso },
+    status: { $in: ["pending", "confirmed", "completed", "cancelled"] },
+  })
+    .populate("user", "name age")
+    .sort({ appointmentDateIso: 1, appointmentTimeValue: 1, createdAt: 1 })
+    .lean();
+
+  const consultationFee = toMoney(profile.consultationFee);
+  const rows = appointments.map((a) => {
+    const price = toMoney(a?.service?.price) || consultationFee;
+    return {
+      patientName: a.user?.name,
+      patientAge: a.user?.age,
+      condition: (a.notes || "").trim(),
+      price,
+      date: a.appointmentDate || a.appointmentDateIso,
+      time: a.appointmentTime || a.appointmentTimeValue,
+      status: a.status,
+      billable: a.status !== "cancelled" ? price : 0,
+    };
+  });
+
+  const totals = {
+    billableCount: rows.filter((r) => r.status !== "cancelled").length,
+    totalMoney: rows.reduce((sum, r) => sum + (r.status !== "cancelled" ? toMoney(r.billable) : 0), 0),
+  };
+
+  const workbook = buildExcelWorkbook({
+    title: "تقرير الحجوزات الشهري (Excel)",
+    doctorName: profile.displayName || doctorUser?.name || doctorUser?.email || "-",
+    periodLabel: `الشهر: ${monthIso}`,
+    rows,
+    totals,
+  });
+
+  res.setHeader(
+    "Content-Type",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  );
+  res.setHeader(
+    "Content-Disposition",
+    `attachment; filename="monthly-bookings-${monthIso}.xlsx"`
+  );
+
+  await workbook.xlsx.write(res);
+  res.end();
 });
 
 router.get("/users/emails", authMiddleware, authMiddleware.requireRole("admin"), async (req, res) => {

@@ -125,12 +125,19 @@ const ensureQrForAppointment = async (appointment, extraPayload = {}) => {
         parsed?.age ??
         parsed?.userAge ??
         parsed?.patient_age;
+
+      const expectedServiceName =
+        typeof appointment?.service?.name === "string" && appointment.service.name.trim()
+          ? appointment.service.name.trim()
+          : "";
+      const parsedServiceName = String(parsed?.serviceName ?? parsed?.service?.name ?? "").trim();
       if (
         parsedBooking === displayedBookingNumber &&
         (parsedSystem === "" ||
           parsedSystem === systemBookingNumber ||
           parsedBooking === systemBookingNumber) &&
-        (patient?.age == null || String(parsedAge ?? "").trim() !== "")
+        (patient?.age == null || String(parsedAge ?? "").trim() !== "") &&
+        (!expectedServiceName || parsedServiceName === expectedServiceName)
       ) {
         needsRegenerate = false;
       }
@@ -140,6 +147,20 @@ const ensureQrForAppointment = async (appointment, extraPayload = {}) => {
   }
 
   if (!needsRegenerate) return appointment;
+
+  const serviceName =
+    typeof appointment?.service?.name === "string" && appointment.service.name.trim()
+      ? appointment.service.name.trim()
+      : null;
+  const servicePriceRaw = appointment?.service?.price;
+  const servicePrice =
+    typeof servicePriceRaw === "number" ? servicePriceRaw : Number(servicePriceRaw);
+  const serviceDurationRaw = appointment?.service?.durationMinutes;
+  const serviceDurationMinutes =
+    typeof serviceDurationRaw === "number" ? serviceDurationRaw : Number(serviceDurationRaw);
+  const serviceId = appointment?.service?.serviceId
+    ? appointment.service.serviceId.toString?.() || appointment.service.serviceId
+    : null;
 
   const payload = {
     appointmentId: appointment._id,
@@ -156,6 +177,19 @@ const ensureQrForAppointment = async (appointment, extraPayload = {}) => {
     appointmentDate: appointment.appointmentDate,
     appointmentTime: appointment.appointmentTime,
     status: appointment.status,
+    serviceName,
+    servicePrice: Number.isFinite(servicePrice) ? servicePrice : null,
+    serviceDurationMinutes: Number.isFinite(serviceDurationMinutes) ? serviceDurationMinutes : null,
+    service: serviceName
+      ? {
+          serviceId,
+          name: serviceName,
+          price: Number.isFinite(servicePrice) ? servicePrice : null,
+          durationMinutes: Number.isFinite(serviceDurationMinutes)
+            ? serviceDurationMinutes
+            : null,
+        }
+      : null,
     ...extraPayload,
   };
 

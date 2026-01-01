@@ -48,7 +48,7 @@ const generateToken = (user) =>
   jwt.sign(
     { id: user._id, phone: user.phone, role: user.role },
     process.env.JWT_SECRET,
-    { expiresIn: process.env.JWT_EXPIRES_IN || "1d" }
+    { expiresIn: process.env.JWT_EXPIRES_IN || "30d" }
   );
 
 /**
@@ -337,11 +337,7 @@ router.post("/login", async (req, res) => {
       }
     }
 
-    const token = jwt.sign(
-      { id: user._id, phone: user.phone, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
-    );
+    const token = generateToken(user);
     return res.json({
       message: "تم تسجيل الدخول مباشرة (بدون رمز)",
       user: {

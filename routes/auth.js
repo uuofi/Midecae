@@ -117,6 +117,14 @@ router.post("/register", async (req, res) => {
           .json({ message: "بيانات الطبيب ناقصة: كل الحقول المهنية مطلوبة" });
       }
 
+      if (!secretaryPhone) {
+        return res.status(400).json({ message: "رقم السكرتير مطلوب" });
+      }
+
+      if (!isValidPhone(secretaryPhone)) {
+        return res.status(400).json({ message: "صيغة رقم السكرتير غير صحيحة" });
+      }
+
       parsedFee = Number(consultationFee);
       if (!Number.isFinite(parsedFee) || parsedFee <= 0) {
         return res.status(400).json({ message: "أتعاب الاستشارة يجب أن تكون رقمًا موجبًا" });
@@ -150,6 +158,9 @@ router.post("/register", async (req, res) => {
     });
 
     if (role === "doctor") {
+      const normalizedSecretaryPhone = secretaryPhone
+        ? normalizePhone(secretaryPhone)
+        : undefined;
       const doctorProfile = await DoctorProfile.create({
         user: user._id,
         displayName: ensureDoctorPrefix(name),
@@ -161,7 +172,7 @@ router.post("/register", async (req, res) => {
         location,
         certification,
         cv,
-        secretaryPhone,
+        secretaryPhone: normalizedSecretaryPhone,
         bio: cv,
         consultationFee: parsedFee,
         status: "pending",

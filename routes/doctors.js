@@ -1,4 +1,5 @@
 const express = require("express");
+const mongoose = require("mongoose");
 const QRCode = require("qrcode");
 const bcrypt = require("bcryptjs");
 const authMiddleware = require("../middleware/authMiddleware");
@@ -100,34 +101,6 @@ const normalizeServicePayload = (body = {}) => {
 // =========================
 // Doctor Services
 // =========================
-
-// List active services for a given doctor (patient booking flow)
-router.get("/:doctorId/services", authMiddleware, async (req, res) => {
-  try {
-    const doctorId = req.params.doctorId;
-    if (!doctorId) {
-      return res.status(400).json({ message: "Doctor id is required" });
-    }
-
-    const doctor = await DoctorProfile.findById(doctorId).select("_id status");
-    if (!doctor) {
-      return res.status(404).json({ message: "Doctor not found" });
-    }
-
-    const services = await DoctorService.find({
-      doctorProfile: doctor._id,
-      isActive: true,
-    })
-      .select("name price durationMinutes isActive")
-      .sort({ createdAt: -1 })
-      .lean();
-
-    return res.json({ services });
-  } catch (err) {
-    console.error("Doctor services list error:", err?.message);
-    return res.status(500).json({ message: "Server error" });
-  }
-});
 
 // Doctor: list all my services (active + inactive)
 router.get("/me/services", authMiddleware, async (req, res) => {
@@ -239,6 +212,37 @@ router.patch("/me/services/:serviceId", authMiddleware, async (req, res) => {
       return res.status(409).json({ message: "هذه الخدمة موجودة بالفعل" });
     }
     console.error("Update service error:", err?.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+// List active services for a given doctor (patient booking flow)
+router.get("/:doctorId/services", authMiddleware, async (req, res) => {
+  try {
+    const doctorId = req.params.doctorId;
+    if (!doctorId) {
+      return res.status(400).json({ message: "Doctor id is required" });
+    }
+    if (!mongoose.isValidObjectId(doctorId)) {
+      return res.status(400).json({ message: "Invalid doctor id" });
+    }
+
+    const doctor = await DoctorProfile.findById(doctorId).select("_id status");
+    if (!doctor) {
+      return res.status(404).json({ message: "Doctor not found" });
+    }
+
+    const services = await DoctorService.find({
+      doctorProfile: doctor._id,
+      isActive: true,
+    })
+      .select("name price durationMinutes isActive")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return res.json({ services });
+  } catch (err) {
+    console.error("Doctor services list error:", err?.message);
     return res.status(500).json({ message: "Server error" });
   }
 });

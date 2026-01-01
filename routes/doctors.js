@@ -293,7 +293,7 @@ router.get("/", async (req, res) => {
       status: "active",
       isAcceptingBookings: true,
       subscriptionEndsAt: { $gt: now },
-    }).populate("user", "name email age");
+    }).populate("user", "name email age phone");
 
     doctors.forEach((doc) => {
       if (doc.displayName) {

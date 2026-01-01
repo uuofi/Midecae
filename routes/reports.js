@@ -38,7 +38,7 @@ const DEFAULT_SCHEDULE = {
 router.get("/doctors-by-specialty", async (req, res) => {
   try {
     const doctors = await DoctorProfile.find()
-      .populate("user", "name email age")
+      .populate("user", "name email age phone")
       .lean();
 
     const grouped = doctors.reduce((acc, profile) => {
@@ -60,8 +60,13 @@ router.get("/doctors-by-specialty", async (req, res) => {
         status: profile.status,
         isAcceptingBookings: profile.isAcceptingBookings,
         email: profile.user?.email || "",
+        phone: profile.user?.phone || "",
         age: profile.user?.age || null,
-        secretaryPhone: profile.secretaryPhone || "",
+        // Keep legacy field name used by older mobile builds.
+        // Prefer the doctor's account phone; fallback to the stored secretary phone.
+        secretaryPhone: profile.user?.phone || profile.secretaryPhone || "",
+        secretaryPhoneRaw: profile.secretaryPhone || "",
+        contactPhone: profile.user?.phone || profile.secretaryPhone || "",
         avatarUrl: profile.avatarUrl,
         location: profile.location,
         role: profile.specialtyLabel || "طبيب",

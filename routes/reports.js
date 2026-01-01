@@ -11,11 +11,24 @@ const Appointment = require("../models/Appointment");
 const router = express.Router();
 
 const normalizeDateIso = (value) => {
-  const candidate = value ? new Date(value) : new Date();
-  if (Number.isNaN(candidate.getTime())) {
-    return new Date().toISOString().split("T")[0];
+  const todayIso = () => new Date().toISOString().split("T")[0];
+  if (!value) return todayIso();
+
+  const raw = String(value).trim();
+
+  // Strict YYYY-MM-DD parsing to avoid timezone shifts
+  if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+    const [y, m, d] = raw.split("-").map((n) => Number(n));
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    if (Number.isNaN(dt.getTime())) return todayIso();
+    const iso = dt.toISOString().split("T")[0];
+    // Guard against invalid dates like 2024-02-30
+    return iso === raw ? raw : todayIso();
   }
-  candidate.setHours(0, 0, 0, 0);
+
+  const candidate = new Date(raw);
+  if (Number.isNaN(candidate.getTime())) return todayIso();
+  // For full date-times, normalize to ISO date (UTC)
   return candidate.toISOString().split("T")[0];
 };
 
@@ -59,7 +72,7 @@ const toMoney = (value) => {
   return Number.isFinite(n) ? n : 0;
 };
 
-const buildExcelWorkbook = ({ title, doctorName, periodLabel, rows, totals }) => {
+const buildExcelWorkbook = ({ title, doctorName, periodLabel, rows, totals, totalsLabels }) => {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "MediCare";
   workbook.created = new Date();
@@ -98,13 +111,15 @@ const buildExcelWorkbook = ({ title, doctorName, periodLabel, rows, totals }) =>
   });
 
   sheet.addRow([]);
+  const countLabel = totalsLabels?.count || "مجموع الحجوزات (غير ملغاة)";
+  const moneyLabel = totalsLabels?.money || "مجموع الفلوس (غير ملغاة)";
   const totalsRow1 = sheet.addRow([
     "",
     "",
     "",
     "",
     "",
-    "مجموع الحجوزات (غير ملغاة)",
+    countLabel,
     totals.billableCount,
   ]);
   totalsRow1.font = { bold: true };
@@ -114,7 +129,7 @@ const buildExcelWorkbook = ({ title, doctorName, periodLabel, rows, totals }) =>
     "",
     "",
     "",
-    "مجموع الفلوس (غير ملغاة)",
+    moneyLabel,
     totals.totalMoney,
   ]);
   totalsRow2.font = { bold: true };
@@ -630,9 +645,14 @@ router.get("/download/monthly-excel", async (req, res) => {
     };
   });
 
+  // Monthly totals should include only accepted bookings (confirmed/completed)
+  const acceptedStatuses = new Set(["confirmed", "completed"]);
   const totals = {
-    billableCount: rows.filter((r) => r.status !== "cancelled").length,
-    totalMoney: rows.reduce((sum, r) => sum + (r.status !== "cancelled" ? toMoney(r.billable) : 0), 0),
+    billableCount: rows.filter((r) => acceptedStatuses.has(r.status)).length,
+    totalMoney: rows.reduce(
+      (sum, r) => sum + (acceptedStatuses.has(r.status) ? toMoney(r.billable) : 0),
+      0
+    ),
   };
 
   const workbook = buildExcelWorkbook({
@@ -641,6 +661,10 @@ router.get("/download/monthly-excel", async (req, res) => {
     periodLabel: `الشهر: ${monthIso}`,
     rows,
     totals,
+    totalsLabels: {
+      count: "مجموع الحجوزات (المقبولة)",
+      money: "مجموع الفلوس (الحجوزات المقبولة)",
+    },
   });
 
   res.setHeader(

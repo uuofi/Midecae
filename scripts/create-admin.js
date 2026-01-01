@@ -5,6 +5,17 @@ const connectDB = require('../config/db');
 const User = require('../models/User');
 
 dotenv.config();
+
+const normalizePhone = (phone) => {
+  let p = String(phone || "").replace(/\s|-/g, "").trim();
+  // إذا الرقم يبدأ بـ +964 ويليه 10 أرقام
+  if (/^\+964\d{10}$/.test(p)) return p;
+  // إذا الرقم يبدأ بـ 0 ويليه 10 أرقام
+  if (/^0\d{10}$/.test(p)) return "+964" + p.slice(1);
+  // إذا الرقم فقط 10 أرقام (بدون صفر أو +964)
+  if (/^\d{10}$/.test(p)) return "+964" + p;
+  return p;
+};
 (async () => {
   try {
     await connectDB();
@@ -15,7 +26,7 @@ dotenv.config();
       console.error('Please set ADMIN_PHONE in .env');
       process.exit(1);
     }
-    const normalized = phone.replace(/\s|-/g, '');
+    const normalized = normalizePhone(phone);
     let user = await User.findOne({ phone: normalized });
     if (user) {
       user.role = 'admin';

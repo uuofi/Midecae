@@ -207,8 +207,11 @@ router.post("/verify", async (req, res) => {
     if (user.role === "doctor") {
       const profile = await DoctorProfile.findOne({ user: user._id });
       if (profile) {
-        profile.status = "active";
-        profile.isAcceptingBookings = true;
+        // Doctor accounts must be approved by admin before they become active.
+        // Keep status as-is (usually "pending") and do not enable bookings here.
+        if (profile.status !== "active") {
+          profile.isAcceptingBookings = false;
+        }
         await profile.save();
       }
     }
@@ -286,6 +289,26 @@ router.post("/login", async (req, res) => {
     }
 
     // تجاوز خطوة إرسال كود الدخول
+    // Doctors must be approved + subscription active before they can login.
+    if (user.role === "doctor") {
+      const profile = await DoctorProfile.findOne({ user: user._id }).select(
+        "status subscriptionEndsAt subscriptionGraceEndsAt"
+      );
+      if (!profile) {
+        return res.status(403).json({ message: "Doctor profile not found" });
+      }
+      if (profile.status !== "active") {
+        return res.status(403).json({ message: "بانتظار موافقة الادمن" });
+      }
+      if (profile.subscriptionEndsAt) {
+        const cutoff = profile.subscriptionGraceEndsAt || profile.subscriptionEndsAt;
+        const cutoffMs = new Date(cutoff).getTime();
+        if (!Number.isNaN(cutoffMs) && Date.now() > cutoffMs) {
+          return res.status(403).json({ message: "الاشتراك منتهي" });
+        }
+      }
+    }
+
     const token = jwt.sign(
       { id: user._id, phone: user.phone, role: user.role },
       process.env.JWT_SECRET,

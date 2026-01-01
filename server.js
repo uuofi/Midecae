@@ -15,6 +15,7 @@ const Appointment = require("./models/Appointment");
 const DoctorProfile = require("./models/DoctorProfile");
 const User = require("./models/User");
 const Block = require("./models/Block");
+const DoctorProfileModel = require("./models/DoctorProfile");
 
 dotenv.config();
 connectDB();
@@ -182,6 +183,24 @@ io.use(async (socket, next) => {
       socket.handshake.headers.authorization?.replace("Bearer ", "");
     if (!token) return next(new Error(AUTH_ERROR));
     const payload = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(payload.id).select("role");
+    if (!user) return next(new Error(AUTH_ERROR));
+
+    if (user.role === "doctor") {
+      const profile = await DoctorProfileModel.findOne({ user: user._id }).select(
+        "status subscriptionEndsAt subscriptionGraceEndsAt"
+      );
+      if (!profile) return next(new Error(AUTH_ERROR));
+      if (profile.status !== "active") return next(new Error(AUTH_ERROR));
+      if (profile.subscriptionEndsAt) {
+        const cutoff = profile.subscriptionGraceEndsAt || profile.subscriptionEndsAt;
+        const cutoffMs = new Date(cutoff).getTime();
+        if (!Number.isNaN(cutoffMs) && Date.now() > cutoffMs) {
+          return next(new Error(AUTH_ERROR));
+        }
+      }
+    }
+
     socket.userId = payload.id;
     next();
   } catch (err) {

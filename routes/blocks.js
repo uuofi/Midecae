@@ -7,17 +7,8 @@ const Block = require("../models/Block");
 const router = express.Router();
 
 // Doctor sets or updates block for a patient
-router.post("/", authMiddleware, async (req, res) => {
+router.post("/", authMiddleware, authMiddleware.requireRole("doctor"), async (req, res) => {
   try {
-    // Allow any authenticated doctor account; avoid strict role mismatch issues
-    const profile = await DoctorProfile.findOne({ user: req.user._id });
-    if (!profile && req.user.role !== "doctor") {
-      // Fallback: still allow if user has doctorProfile id stored on user
-      if (!req.user.doctorProfile) {
-        return res.status(403).json({ message: "Only doctors can manage blocks" });
-      }
-    }
-
     const { patientId, blockChat, blockBooking } = req.body || {};
     if (!patientId) {
       return res.status(400).json({ message: "patientId is required" });
@@ -28,16 +19,16 @@ router.post("/", authMiddleware, async (req, res) => {
       return res.status(404).json({ message: "Patient not found" });
     }
 
-    const doctorProfile = await DoctorProfile.findOne({ user: req.user._id });
+    const doctorProfile = await DoctorProfile.findOne({ user: req.user.id });
     if (!doctorProfile) {
       return res.status(400).json({ message: "Doctor profile not found" });
     }
 
     const updated = await Block.findOneAndUpdate(
-      { doctor: req.user._id, patient: patientId },
+      { doctor: req.user.id, patient: patientId },
       {
         $set: {
-          doctor: req.user._id,
+          doctor: req.user.id,
           patient: patientId,
           ...(blockChat !== undefined ? { blockChat: !!blockChat } : {}),
           ...(blockBooking !== undefined ? { blockBooking: !!blockBooking } : {}),
@@ -54,16 +45,10 @@ router.post("/", authMiddleware, async (req, res) => {
 });
 
 // Get block status for a patient (doctor scope)
-router.get("/:patientId", authMiddleware, async (req, res) => {
+router.get("/:patientId", authMiddleware, authMiddleware.requireRole("doctor"), async (req, res) => {
   try {
-    const profile = await DoctorProfile.findOne({ user: req.user._id });
-    if (!profile && req.user.role !== "doctor") {
-      if (!req.user.doctorProfile) {
-        return res.status(403).json({ message: "Only doctors can view blocks" });
-      }
-    }
     const { patientId } = req.params;
-    const block = await Block.findOne({ doctor: req.user._id, patient: patientId }).lean();
+    const block = await Block.findOne({ doctor: req.user.id, patient: patientId }).lean();
     return res.json({
       block: block || { blockChat: false, blockBooking: false },
     });

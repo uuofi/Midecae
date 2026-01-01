@@ -315,7 +315,7 @@ router.get("/download/daily", async (req, res) => {
   doc.end();
 });
 
-router.get("/users/emails", async (req, res) => {
+router.get("/users/emails", authMiddleware, authMiddleware.requireRole("admin"), async (req, res) => {
   try {
     const [doctorUsers, patientUsers] = await Promise.all([
       User.find({ role: "doctor" }).select("name email").lean(),
@@ -331,5 +331,6 @@ router.get("/users/emails", async (req, res) => {
     return res.status(500).json({ message: "Server error" });
   }
 });
+
 
 module.exports = router;

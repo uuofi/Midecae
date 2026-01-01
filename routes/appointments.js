@@ -542,6 +542,34 @@ router.patch("/:id/cancel", authMiddleware, async (req, res) => {
     appointment.status = "cancelled";
     await appointment.save();
 
+    //            : notify doctor when patient cancels
+    try {
+      if (appointment.doctorProfile) {
+        const doctorProfile = await DoctorProfile.findById(appointment.doctorProfile)
+          .select("user displayName")
+          .lean();
+        if (doctorProfile?.user) {
+          const patient = await User.findById(req.user.id).select("name").lean();
+          const patientName = patient?.name || "    ";
+          const doctorName = ensureDoctorPrefix(doctorProfile.displayName);
+          const apptDate = appointment.appointmentDate || appointment.appointmentDateIso || "";
+          const apptTime = appointment.appointmentTime || appointment.appointmentTimeValue || "";
+
+          await sendPushToUser(doctorProfile.user, {
+            title: "تم إلغاء حجز",
+            body: `قام ${patientName} بإلغاء الحجز${doctorName ? ` لدى ${doctorName}` : ""}${apptDate ? ` بتاريخ ${apptDate}` : ""}${apptTime ? ` في ${apptTime}` : ""}`,
+            data: {
+              type: "appointment_cancelled",
+              appointmentId: String(appointment._id),
+              role: "doctor",
+            },
+          });
+        }
+      }
+    } catch (pushErr) {
+      console.error("Push to doctor (patient cancel) error:", pushErr?.message);
+    }
+
     await releaseBookingNumber(appointment);
 
     return res.json({ appointment });

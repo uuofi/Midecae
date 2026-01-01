@@ -256,20 +256,21 @@ router.post("/", authMiddleware, async (req, res) => {
       // Block booking if doctor's subscription is expired
       try {
         const now = new Date();
-        if (
-          linkedDoctor.subscriptionEndsAt &&
-          new Date(linkedDoctor.subscriptionEndsAt) < now
-        ) {
+        if (!linkedDoctor.subscriptionEndsAt) {
+          return res.status(403).json({
+            message: "لا يمكن الحجز لدى هذا الطبيب لأنه لا يملك اشتراكاً فعالاً",
+          });
+        }
+
+        if (new Date(linkedDoctor.subscriptionEndsAt) < now) {
           // optional: allow within grace period
           if (
             !linkedDoctor.subscriptionGraceEndsAt ||
             new Date(linkedDoctor.subscriptionGraceEndsAt) < now
           ) {
-            return res
-              .status(403)
-              .json({
-                message: "لا يمكن الحجز لدى هذا الطبيب لأن اشتراكه منتهي",
-              });
+            return res.status(403).json({
+              message: "لا يمكن الحجز لدى هذا الطبيب لأن اشتراكه منتهي",
+            });
           }
         }
       } catch (err) {

@@ -165,6 +165,10 @@ router.post("/register", async (req, res) => {
         bio: cv,
         consultationFee: parsedFee,
         status: "pending",
+        // No subscription on first registration.
+        subscriptionStartsAt: null,
+        subscriptionEndsAt: null,
+        subscriptionGraceEndsAt: null,
       });
       user.doctorProfile = doctorProfile._id;
       await user.save();
@@ -317,12 +321,14 @@ router.post("/login", async (req, res) => {
       if (profile.status !== "active") {
         return res.status(403).json({ message: "بانتظار موافقة الادمن" });
       }
-      if (profile.subscriptionEndsAt) {
-        const cutoff = profile.subscriptionGraceEndsAt || profile.subscriptionEndsAt;
-        const cutoffMs = new Date(cutoff).getTime();
-        if (!Number.isNaN(cutoffMs) && Date.now() > cutoffMs) {
-          return res.status(403).json({ message: "الاشتراك منتهي" });
-        }
+      // Require an active subscription.
+      if (!profile.subscriptionEndsAt) {
+        return res.status(403).json({ message: "لا يوجد اشتراك" });
+      }
+      const cutoff = profile.subscriptionGraceEndsAt || profile.subscriptionEndsAt;
+      const cutoffMs = new Date(cutoff).getTime();
+      if (!Number.isNaN(cutoffMs) && Date.now() > cutoffMs) {
+        return res.status(403).json({ message: "الاشتراك منتهي" });
       }
     }
 

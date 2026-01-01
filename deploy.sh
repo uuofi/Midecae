@@ -9,6 +9,6 @@ echo "إعادة تثبيت الاعتمادات (npm install)..."
 npm install
 
 echo "إعادة تشغيل التطبيق عبر pm2..."
-pm2 restart medi-care-backend || pm2 start server.js --name medi-care-backend
+pm2 restart api.medicare-iq.com || pm2 start ecosystem.config.cjs
 
 echo "تم تحديث ونشر الباك اند بنجاح!"

@@ -65,10 +65,11 @@ const ensureDoctorPrefix = (rawName = "") => {
 
 const isSubscriptionActive = (profile) => {
   if (!profile) return false;
-  if (!profile.subscriptionEndsAt) return true;
+  // Null/empty end date means: no active subscription.
+  if (!profile.subscriptionEndsAt) return false;
   const cutoff = profile.subscriptionGraceEndsAt || profile.subscriptionEndsAt;
   const cutoffMs = new Date(cutoff).getTime();
-  if (Number.isNaN(cutoffMs)) return true;
+  if (Number.isNaN(cutoffMs)) return false;
   return Date.now() <= cutoffMs;
 };
 

@@ -292,7 +292,7 @@ router.get("/", async (req, res) => {
     const doctors = await DoctorProfile.find({
       status: "active",
       isAcceptingBookings: true,
-      $or: [{ subscriptionEndsAt: { $gt: now } }, { subscriptionEndsAt: null }],
+      subscriptionEndsAt: { $gt: now },
     }).populate("user", "name email age");
 
     doctors.forEach((doc) => {

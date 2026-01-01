@@ -202,12 +202,11 @@ io.use(async (socket, next) => {
       );
       if (!profile) return next(new Error(AUTH_ERROR));
       if (profile.status !== "active") return next(new Error(AUTH_ERROR));
-      if (profile.subscriptionEndsAt) {
-        const cutoff = profile.subscriptionGraceEndsAt || profile.subscriptionEndsAt;
-        const cutoffMs = new Date(cutoff).getTime();
-        if (!Number.isNaN(cutoffMs) && Date.now() > cutoffMs) {
-          return next(new Error(AUTH_ERROR));
-        }
+      if (!profile.subscriptionEndsAt) return next(new Error(AUTH_ERROR));
+      const cutoff = profile.subscriptionGraceEndsAt || profile.subscriptionEndsAt;
+      const cutoffMs = new Date(cutoff).getTime();
+      if (!Number.isNaN(cutoffMs) && Date.now() > cutoffMs) {
+        return next(new Error(AUTH_ERROR));
       }
     }
 

@@ -3,6 +3,17 @@ const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const DoctorProfile = require("../models/DoctorProfile");
 
+const normalizePhone = (phone) => {
+  let p = String(phone || "").replace(/\s|-/g, "").trim();
+  // +964 + 10 digits
+  if (/^\+964\d{10}$/.test(p)) return p;
+  // 0 + 10 digits
+  if (/^0\d{10}$/.test(p)) return "+964" + p.slice(1);
+  // 10 digits only
+  if (/^\d{10}$/.test(p)) return "+964" + p;
+  return p;
+};
+
 const isSubscriptionActive = (profile) => {
   if (!profile) return false;
   // If no end date, treat as active (free/indefinite).
@@ -27,9 +38,14 @@ const authMiddleware = async function (req, res, next) {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
     // Always re-load user from DB so role changes apply immediately.
-    const userDoc = await User.findById(decoded.id).select("role phone");
+    const userDoc = await User.findById(decoded.id).select("role phone isBlocked");
     if (!userDoc) {
       return res.status(401).json({ message: "User not found" });
+    }
+
+    // Patient global block
+    if (userDoc.role === "patient" && userDoc.isBlocked) {
+      return res.status(403).json({ message: "Account is blocked" });
     }
 
     // نخزن بيانات اليوزر من التوكن + تحديث الدور من DB
@@ -70,6 +86,16 @@ authMiddleware.requireRole = function (role) {
     if (!req.user) return res.status(401).json({ message: "No token, authorization denied" });
     if (!role) return next();
     if (req.user.role !== role) return res.status(403).json({ message: "Forbidden: insufficient role" });
+
+    // Optional hard lock: only the configured admin phone can act as admin.
+    if (role === "admin" && process.env.ADMIN_PHONE) {
+      const expected = normalizePhone(process.env.ADMIN_PHONE);
+      const actual = normalizePhone(req.user.phone);
+      if (expected && actual && expected !== actual) {
+        return res.status(403).json({ message: "Forbidden: admin access is restricted" });
+      }
+    }
+
     return next();
   };
 };

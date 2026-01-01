@@ -20,7 +20,7 @@ const normalizePhone = (phone) => {
   try {
     await connectDB();
     const phone = process.env.ADMIN_PHONE;
-    const password = process.env.ADMIN_PASSWORD || 'admin123A';
+    const password = process.env.ADMIN_PASSWORD;
     const name = process.env.ADMIN_NAME || 'Admin';
     if (!phone) {
       console.error('Please set ADMIN_PHONE in .env');
@@ -31,11 +31,23 @@ const normalizePhone = (phone) => {
     if (user) {
       user.role = 'admin';
       user.phoneVerified = true;
+
+      if (typeof process.env.ADMIN_NAME === 'string' && process.env.ADMIN_NAME.trim()) {
+        user.name = process.env.ADMIN_NAME.trim();
+      }
+
+      // Only update password for existing user when ADMIN_PASSWORD is explicitly set.
+      if (typeof password === 'string' && password.trim()) {
+        const hashed = await bcrypt.hash(password, 12);
+        user.password = hashed;
+      }
+
       await user.save();
       console.log('Updated existing user to admin:', normalized);
       process.exit(0);
     }
-    const hashed = await bcrypt.hash(password, 12);
+    const finalPassword = (typeof password === 'string' && password.trim()) ? password : 'admin123A';
+    const hashed = await bcrypt.hash(finalPassword, 12);
     user = await User.create({ name, phone: normalized, password: hashed, role: 'admin', phoneVerified: true });
     console.log('Created admin user:', normalized);
     process.exit(0);

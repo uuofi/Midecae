@@ -67,8 +67,9 @@ app.use("/api/auth", authLimiter);
 app.use(express.json({ limit: "15mb" }));
 app.use(express.urlencoded({ extended: true, limit: "15mb" }));
 
-app.get("/", (req, res) => {
-  res.send("MediCare API Running...");
+// Health check (always available)
+app.get("/api/health", (req, res) => {
+  res.json({ ok: true, name: "MediCare API", ts: new Date().toISOString() });
 });
 
 // Auth + domain routes
@@ -98,6 +99,10 @@ if (String(process.env.SERVE_ADMIN || "").toLowerCase() === "true") {
   const indexHtml = path.join(adminDist, "index.html");
   if (fs.existsSync(indexHtml)) {
     app.use(express.static(adminDist));
+    // Root should serve the Admin app when enabled.
+    app.get("/", (req, res) => {
+      res.sendFile(indexHtml);
+    });
     // SPA fallback (do not intercept /api/*)
     app.get(/^\/(?!api\/).*/, (req, res) => {
       res.sendFile(indexHtml);
@@ -110,6 +115,11 @@ if (String(process.env.SERVE_ADMIN || "").toLowerCase() === "true") {
     );
   }
 }
+
+// Default root response when Admin is not being served
+app.get("/", (req, res) => {
+  res.send("MediCare API Running...");
+});
 
 const PORT = process.env.PORT || 5001;
 const io = new Server(server, {
@@ -221,6 +231,15 @@ io.on("connection", (socket) => {
     if (!access) return socket.emit("error", AUTH_ERROR);
 
     const senderType = access.user.role === "doctor" ? "doctor" : "patient";
+
+    // Admin/doctor-level chat control
+    if (senderType === "doctor") {
+      const profile = await DoctorProfileModel.findOne({ user: access.user._id }).select("isChatEnabled");
+      if (profile && profile.isChatEnabled === false) {
+        return socket.emit("error", "تم تعطيل المحادثة لهذا الطبيب");
+      }
+    }
+
     // Block chat if doctor blocked patient
     const doctorUserId = access.appointment?.doctorProfile?.user;
     const patientUserId = access.appointment?.user?._id;

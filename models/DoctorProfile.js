@@ -99,6 +99,10 @@ const doctorProfileSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    isChatEnabled: {
+      type: Boolean,
+      default: true,
+    },
     specialtySlug: {
       type: String,
       default: "",

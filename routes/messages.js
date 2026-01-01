@@ -99,6 +99,13 @@ router.post("/:appointmentId", authMiddleware, async (req, res) => {
     if (!appointment) {
       return res.status(403).json({ message: "Not authorized" });
     }
+    // Admin/doctor-level chat control
+    if (req.user.role === "doctor") {
+      const profile = await DoctorProfile.findOne({ user: req.user._id }).select("isChatEnabled");
+      if (profile && profile.isChatEnabled === false) {
+        return res.status(403).json({ message: "تم تعطيل المحادثة لهذا الطبيب" });
+      }
+    }
     // Block chat: prevent patient from sending if doctor blocked chat
     if (req.user.role !== "doctor") {
       const doctorUserId = appointment.doctorProfile?.user;

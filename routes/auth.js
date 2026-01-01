@@ -77,6 +77,11 @@ router.post("/register", async (req, res) => {
       age,
     } = req.body;
 
+    // Never allow public registration as admin.
+    if (role === "admin") {
+      return res.status(403).json({ message: "غير مسموح إنشاء حساب أدمن عبر التسجيل" });
+    }
+
     if (!name || !phone || !password)
       return res.status(400).json({ message: "الاسم ورقم الجوال وكلمة المرور مطلوبة" });
 
@@ -276,6 +281,10 @@ router.post("/login", async (req, res) => {
       return res.status(401).json({ message: "رقم الجوال أو كلمة المرور غير صحيحة" });
     }
 
+    if (user.role === "patient" && user.isBlocked) {
+      return res.status(403).json({ message: "الحساب محظور" });
+    }
+
     const match = await bcrypt.compare(password, user.password);
     if (!match) {
       return res.status(401).json({ message: "رقم الجوال أو كلمة المرور غير صحيحة" });
@@ -286,6 +295,14 @@ router.post("/login", async (req, res) => {
       return res.status(403).json({
         message: "يجب تفعيل رقم الجوال قبل تسجيل الدخول.",
       });
+    }
+
+    // Admin hard lock: only the configured ADMIN_PHONE can login as admin.
+    if (user.role === "admin" && process.env.ADMIN_PHONE) {
+      const expectedAdminPhone = normalizePhone(process.env.ADMIN_PHONE);
+      if (expectedAdminPhone && user.phone !== expectedAdminPhone) {
+        return res.status(403).json({ message: "تسجيل دخول الأدمن مقيد برقم محدد" });
+      }
     }
 
     // تجاوز خطوة إرسال كود الدخول
@@ -348,6 +365,12 @@ router.post("/login/verify", async (req, res) => {
     if (!user) {
       return res.status(400).json({ message: "المستخدم غير موجود" });
     }
+
+    // Never allow admin token issuance via this shortcut.
+    if (user.role === "admin") {
+      return res.status(403).json({ message: "تم تعطيل تسجيل دخول الأدمن بهذه الطريقة" });
+    }
+
     const token = jwt.sign(
       { id: user._id, phone: user.phone, role: user.role },
       process.env.JWT_SECRET,

@@ -111,28 +111,20 @@ const buildExcelWorkbook = ({ title, doctorName, periodLabel, rows, totals, tota
   });
 
   sheet.addRow([]);
-  const countLabel = totalsLabels?.count || "مجموع الحجوزات (غير ملغاة)";
-  const moneyLabel = totalsLabels?.money || "مجموع الفلوس (غير ملغاة)";
-  const totalsRow1 = sheet.addRow([
-    "",
-    "",
-    "",
-    "",
-    "",
-    countLabel,
-    totals.billableCount,
-  ]);
+
+  const confirmedCountLabel = totalsLabels?.confirmedCount || "عدد الحجوزات المؤكدة";
+  const pendingCountLabel = totalsLabels?.pendingCount || "عدد الحجوزات غير مؤكدة";
+  const cancelledCountLabel = totalsLabels?.cancelledCount || "عدد الحجوزات الملغاة";
+  const moneyLabel = totalsLabels?.money || "مجموع الفلوس (المؤكدة)";
+
+  const totalsRow1 = sheet.addRow(["", "", "", "", "", confirmedCountLabel, totals.confirmedCount ?? 0]);
   totalsRow1.font = { bold: true };
-  const totalsRow2 = sheet.addRow([
-    "",
-    "",
-    "",
-    "",
-    "",
-    moneyLabel,
-    totals.totalMoney,
-  ]);
+  const totalsRow2 = sheet.addRow(["", "", "", "", "", pendingCountLabel, totals.pendingCount ?? 0]);
   totalsRow2.font = { bold: true };
+  const totalsRow3 = sheet.addRow(["", "", "", "", "", cancelledCountLabel, totals.cancelledCount ?? 0]);
+  totalsRow3.font = { bold: true };
+  const totalsRow4 = sheet.addRow(["", "", "", "", "", moneyLabel, totals.totalMoney ?? 0]);
+  totalsRow4.font = { bold: true };
 
   // Basic column widths
   sheet.columns = [
@@ -534,8 +526,13 @@ router.get("/download/daily-excel", async (req, res) => {
   });
 
   const totals = {
-    billableCount: rows.filter((r) => r.status !== "cancelled").length,
-    totalMoney: rows.reduce((sum, r) => sum + (r.status !== "cancelled" ? toMoney(r.billable) : 0), 0),
+    confirmedCount: rows.filter((r) => r.status === "confirmed").length,
+    pendingCount: rows.filter((r) => r.status === "pending").length,
+    cancelledCount: rows.filter((r) => r.status === "cancelled").length,
+    totalMoney: rows.reduce(
+      (sum, r) => sum + (r.status === "confirmed" ? toMoney(r.billable) : 0),
+      0
+    ),
   };
 
   const workbook = buildExcelWorkbook({
@@ -544,6 +541,12 @@ router.get("/download/daily-excel", async (req, res) => {
     periodLabel: `التاريخ: ${targetDate}`,
     rows,
     totals,
+    totalsLabels: {
+      confirmedCount: "عدد الحجوزات المؤكدة",
+      pendingCount: "عدد الحجوزات غير مؤكدة",
+      cancelledCount: "عدد الحجوزات الملغاة",
+      money: "مجموع الفلوس (المؤكدة)",
+    },
   });
 
   res.setHeader(
@@ -645,12 +648,12 @@ router.get("/download/monthly-excel", async (req, res) => {
     };
   });
 
-  // Monthly totals should include only accepted bookings (confirmed/completed)
-  const acceptedStatuses = new Set(["confirmed", "completed"]);
   const totals = {
-    billableCount: rows.filter((r) => acceptedStatuses.has(r.status)).length,
+    confirmedCount: rows.filter((r) => r.status === "confirmed").length,
+    pendingCount: rows.filter((r) => r.status === "pending").length,
+    cancelledCount: rows.filter((r) => r.status === "cancelled").length,
     totalMoney: rows.reduce(
-      (sum, r) => sum + (acceptedStatuses.has(r.status) ? toMoney(r.billable) : 0),
+      (sum, r) => sum + (r.status === "confirmed" ? toMoney(r.billable) : 0),
       0
     ),
   };
@@ -662,8 +665,10 @@ router.get("/download/monthly-excel", async (req, res) => {
     rows,
     totals,
     totalsLabels: {
-      count: "مجموع الحجوزات (المقبولة)",
-      money: "مجموع الفلوس (الحجوزات المقبولة)",
+      confirmedCount: "عدد الحجوزات المؤكدة",
+      pendingCount: "عدد الحجوزات غير مؤكدة",
+      cancelledCount: "عدد الحجوزات الملغاة",
+      money: "مجموع الفلوس (المؤكدة)",
     },
   });
 

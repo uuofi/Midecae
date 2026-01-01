@@ -86,10 +86,16 @@ const canAccessAppointment = async (user, appointmentId) => {
     .populate("doctorProfile")
     .populate("user");
   if (!appointment) return null;
-  const isPatient = appointment.user && appointment.user._id.equals(user._id);
+
+  const userId = String(user?._id || user?.id || "");
+  if (!userId) return null;
+
+  const isPatient =
+    !!appointment.user && String(appointment.user._id) === userId;
   const isDoctor =
-    appointment.doctorProfile &&
-    (appointment.doctorProfile.user?.equals(user._id) || user.role === "doctor");
+    !!appointment.doctorProfile &&
+    String(appointment.doctorProfile.user) === userId;
+
   return isPatient || isDoctor ? appointment : null;
 };
 

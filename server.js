@@ -184,8 +184,7 @@ const canAccessAppointment = async (userId, appointmentId) => {
   if (!appointment) return null;
   const isPatient = appointment.user && appointment.user._id.equals(user._id);
   const isDoctor =
-    appointment.doctorProfile &&
-    (appointment.doctorProfile.user?.equals(user._id) || user.role === "doctor");
+    appointment.doctorProfile && appointment.doctorProfile.user?.equals(user._id);
   return isPatient || isDoctor ? { user, appointment } : null;
 };
 

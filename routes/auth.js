@@ -20,7 +20,6 @@ const normalizePhone = (phone) => {
 // يقبل أرقام عراقية تبدأ بـ 07 أو +964 (أي 11 أو 12 رقم بعد 0 أو +)
 const isValidPhone = (phone) => {
   const p = normalizePhone(phone);
-  // 078XXXXXXXXX أو 077XXXXXXXXX أو 079XXXXXXXXX أو 075XXXXXXXXX (11 رقم بعد 0)
   if (/^07[0-9]{9}$/.test(p)) return true;
   // +96478XXXXXXXXX أو +96477XXXXXXXXX أو +96479XXXXXXXXX أو +96475XXXXXXXXX (12 رقم بعد +)
   if (/^\+964[0-9]{10}$/.test(p)) return true;
@@ -191,13 +190,34 @@ router.post("/register", async (req, res) => {
     // طباعة كود التحقق في التيرمنال
     console.log(`OTP for ${user.phone}: ${verificationCode}`);
 
-    // تجاوز التحقق وادخال المستخدم مباشرة
+          // OTP is disabled.
+          // Patients can login immediately; doctors remain pending until admin approval.
+          if (user.role === "doctor") {
+            return res.status(201).json({
+              message: "تم إنشاء الحساب وبانتظار موافقة الادمن",
+              user: {
+                id: user._id,
+                name: user.name,
+                phone: user.phone,
+                role: user.role,
+                doctorProfile: user.doctorProfile,
+                age: user.age,
+              },
+            });
+          }
+
+    const token = generateToken(user);
     return res.status(201).json({
-      message: "تم إنشاء الحساب بنجاح.",
-      phone: user.phone,
-      role: user.role,
-      doctorProfile: user.doctorProfile,
-      // تم تفعيل الحساب مباشرة بدون OTP
+      message: "تم إنشاء الحساب بنجاح",
+      user: {
+        id: user._id,
+        name: user.name,
+        phone: user.phone,
+        role: user.role,
+        doctorProfile: user.doctorProfile,
+        age: user.age,
+      },
+      token,
     });
   } catch (err) {
     console.error("Register error:", err);

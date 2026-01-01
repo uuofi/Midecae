@@ -3,6 +3,7 @@ const QRCode = require("qrcode");
 const bcrypt = require("bcryptjs");
 const authMiddleware = require("../middleware/authMiddleware");
 const DoctorProfile = require("../models/DoctorProfile");
+const DoctorService = require("../models/DoctorService");
 const Appointment = require("../models/Appointment");
 const Counter = require("../models/Counter");
 const User = require("../models/User");
@@ -82,6 +83,165 @@ const VALID_DAY_KEYS = new Set([
 ]);
 
 const router = express.Router();
+
+const toSafeNumber = (value, fallback = 0) => {
+  const num = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(num) ? num : fallback;
+};
+
+const normalizeServicePayload = (body = {}) => {
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  const price = toSafeNumber(body.price, NaN);
+  const durationMinutes = toSafeNumber(body.durationMinutes, NaN);
+  const isActive = typeof body.isActive === "boolean" ? body.isActive : undefined;
+  return { name, price, durationMinutes, isActive };
+};
+
+// =========================
+// Doctor Services
+// =========================
+
+// List active services for a given doctor (patient booking flow)
+router.get("/:doctorId/services", authMiddleware, async (req, res) => {
+  try {
+    const doctorId = req.params.doctorId;
+    if (!doctorId) {
+      return res.status(400).json({ message: "Doctor id is required" });
+    }
+
+    const doctor = await DoctorProfile.findById(doctorId).select("_id status");
+    if (!doctor) {
+      return res.status(404).json({ message: "Doctor not found" });
+    }
+
+    const services = await DoctorService.find({
+      doctorProfile: doctor._id,
+      isActive: true,
+    })
+      .select("name price durationMinutes isActive")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return res.json({ services });
+  } catch (err) {
+    console.error("Doctor services list error:", err?.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+// Doctor: list all my services (active + inactive)
+router.get("/me/services", authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select("role");
+    if (!user || user.role !== "doctor") {
+      return res.status(403).json({ message: "Restricted to doctors" });
+    }
+
+    const profile = await DoctorProfile.findOne({ user: user._id }).select("_id");
+    if (!profile) {
+      return res.status(404).json({ message: "Doctor profile not found" });
+    }
+
+    const services = await DoctorService.find({ doctorProfile: profile._id })
+      .select("name price durationMinutes isActive")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    return res.json({ services });
+  } catch (err) {
+    console.error("My services fetch error:", err?.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+// Doctor: create a new service
+router.post("/me/services", authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select("role");
+    if (!user || user.role !== "doctor") {
+      return res.status(403).json({ message: "Restricted to doctors" });
+    }
+
+    const profile = await DoctorProfile.findOne({ user: user._id }).select("_id schedule consultationFee");
+    if (!profile) {
+      return res.status(404).json({ message: "Doctor profile not found" });
+    }
+
+    const { name, price, durationMinutes } = normalizeServicePayload(req.body);
+
+    if (!name) {
+      return res.status(400).json({ message: "Service name is required" });
+    }
+    if (!Number.isFinite(price) || price < 0) {
+      return res.status(400).json({ message: "Invalid price" });
+    }
+    if (!Number.isFinite(durationMinutes) || durationMinutes < 1 || durationMinutes > 480) {
+      return res.status(400).json({ message: "Invalid duration" });
+    }
+
+    const service = await DoctorService.create({
+      doctorProfile: profile._id,
+      name,
+      price,
+      durationMinutes,
+      isActive: true,
+    });
+
+    return res.status(201).json({ service });
+  } catch (err) {
+    if (err?.code === 11000) {
+      return res.status(409).json({ message: "هذه الخدمة موجودة بالفعل" });
+    }
+    console.error("Create service error:", err?.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+// Doctor: update / deactivate service
+router.patch("/me/services/:serviceId", authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select("role");
+    if (!user || user.role !== "doctor") {
+      return res.status(403).json({ message: "Restricted to doctors" });
+    }
+
+    const profile = await DoctorProfile.findOne({ user: user._id }).select("_id");
+    if (!profile) {
+      return res.status(404).json({ message: "Doctor profile not found" });
+    }
+
+    const service = await DoctorService.findOne({
+      _id: req.params.serviceId,
+      doctorProfile: profile._id,
+    });
+    if (!service) {
+      return res.status(404).json({ message: "Service not found" });
+    }
+
+    const { name, price, durationMinutes, isActive } = normalizeServicePayload(req.body);
+    if (typeof isActive === "boolean") service.isActive = isActive;
+    if (typeof name === "string" && name.trim()) service.name = name.trim();
+    if (Number.isFinite(price)) {
+      if (price < 0) return res.status(400).json({ message: "Invalid price" });
+      service.price = price;
+    }
+    if (Number.isFinite(durationMinutes)) {
+      if (durationMinutes < 1 || durationMinutes > 480) {
+        return res.status(400).json({ message: "Invalid duration" });
+      }
+      service.durationMinutes = durationMinutes;
+    }
+
+    await service.save();
+    return res.json({ service });
+  } catch (err) {
+    if (err?.code === 11000) {
+      return res.status(409).json({ message: "هذه الخدمة موجودة بالفعل" });
+    }
+    console.error("Update service error:", err?.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
 
 const getNextBookingNumber = async () => {
   const counter = await Counter.findOneAndUpdate(
@@ -435,6 +595,7 @@ router.post("/appointments/manual", authMiddleware, async (req, res) => {
       appointmentTimeValue,
       notes,
       status = "confirmed",
+      serviceId,
     } = req.body;
 
     if (!patientName || !patientPhone || !appointmentDate || !appointmentTime) {
@@ -476,6 +637,30 @@ router.post("/appointments/manual", authMiddleware, async (req, res) => {
       ? status
       : "confirmed";
 
+    // Resolve service snapshot (server-derived)
+    let resolvedService = {
+      serviceId: null,
+      name: "",
+      price: Number(profile.consultationFee) || 0,
+      durationMinutes: Number(profile.schedule?.duration) || 0,
+    };
+    if (serviceId) {
+      const svc = await DoctorService.findOne({
+        _id: serviceId,
+        doctorProfile: profile._id,
+        isActive: true,
+      }).select("name price durationMinutes");
+      if (!svc) {
+        return res.status(400).json({ message: "الخدمة المختارة غير متاحة" });
+      }
+      resolvedService = {
+        serviceId: svc._id,
+        name: svc.name,
+        price: Number(svc.price) || 0,
+        durationMinutes: Number(svc.durationMinutes) || 0,
+      };
+    }
+
     const appointment = await Appointment.create({
       user: patient._id,
       doctorName: normalizedDoctorName,
@@ -492,6 +677,7 @@ router.post("/appointments/manual", authMiddleware, async (req, res) => {
       status: safeStatus,
       bookingNumber: await getNextBookingNumber(),
       doctorQueueNumber: await getNextDoctorQueueNumber(profile._id),
+      service: resolvedService,
     });
 
     await ensureQrForAppointment(appointment, {

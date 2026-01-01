@@ -3,6 +3,7 @@ const express = require("express");
 const QRCode = require("qrcode");
 const Appointment = require("../models/Appointment");
 const DoctorProfile = require("../models/DoctorProfile");
+const DoctorService = require("../models/DoctorService");
 const Counter = require("../models/Counter");
 const User = require("../models/User");
 const Block = require("../models/Block");
@@ -209,6 +210,7 @@ router.post("/", authMiddleware, async (req, res) => {
       doctorId,
       appointmentDateIso,
       appointmentTimeValue,
+      serviceId,
     } = req.body;
 
     if (
@@ -230,6 +232,33 @@ router.post("/", authMiddleware, async (req, res) => {
       if (!linkedDoctor) {
         return res.status(404).json({ message: "Doctor not found" });
       }
+    }
+
+    // Resolve selected service (server-derived price + duration)
+    let resolvedService = null;
+    if (linkedDoctor && serviceId) {
+      const svc = await DoctorService.findOne({
+        _id: serviceId,
+        doctorProfile: linkedDoctor._id,
+        isActive: true,
+      }).select("name price durationMinutes");
+      if (!svc) {
+        return res.status(400).json({ message: "الخدمة المختارة غير متاحة لدى هذا الطبيب" });
+      }
+      resolvedService = {
+        serviceId: svc._id,
+        name: svc.name,
+        price: Number(svc.price) || 0,
+        durationMinutes: Number(svc.durationMinutes) || 0,
+      };
+    } else if (linkedDoctor) {
+      // Backwards-compatible default when no service is selected
+      resolvedService = {
+        serviceId: null,
+        name: "",
+        price: Number(linkedDoctor.consultationFee) || 0,
+        durationMinutes: Number(linkedDoctor.schedule?.duration) || 0,
+      };
     }
 
     const normalizedDateIso =
@@ -355,6 +384,7 @@ router.post("/", authMiddleware, async (req, res) => {
       notes,
       bookingNumber: await getNextBookingNumber(),
       doctorQueueNumber: doctorQueueNumber,
+      ...(resolvedService ? { service: resolvedService } : {}),
     });
 
     await ensureQrForAppointment(newAppointment);

@@ -94,6 +94,30 @@ const appointmentSchema = new mongoose.Schema(
       default: "",
       trim: true,
     },
+
+    // Selected service snapshot (price is stored at booking time and should not be client-controlled)
+    service: {
+      serviceId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "DoctorService",
+        default: null,
+      },
+      name: {
+        type: String,
+        default: "",
+        trim: true,
+      },
+      price: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+      durationMinutes: {
+        type: Number,
+        default: 0,
+        min: 0,
+      },
+    },
   },
   { timestamps: true }
 );

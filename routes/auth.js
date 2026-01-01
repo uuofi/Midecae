@@ -151,8 +151,9 @@ router.post("/register", async (req, res) => {
       phone: normalizedPhone,
       email: email?.toLowerCase?.(),
       password: hashed,
-      phoneVerified: false,
-      verificationCode,
+      // OTP verification is currently disabled; mark as verified immediately.
+      phoneVerified: true,
+      verificationCode: null,
       role,
       age: age !== undefined ? Number(age) : undefined,
     });
@@ -210,63 +211,9 @@ router.post("/register", async (req, res) => {
  * @access  Public
  */
 router.post("/verify", async (req, res) => {
-  // تم تعطيل التحقق من OTP مؤقتاً
-  try {
-    const { phone } = req.body;
-    if (!phone) {
-      return res.status(400).json({ message: "رقم الجوال مطلوب" });
-    }
-    const user = await User.findOne({ phone: normalizePhone(phone) });
-    if (!user) return res.status(400).json({ message: "المستخدم غير موجود" });
-    if (user.phoneVerified) {
-      return res.status(400).json({ message: "رقم الجوال مُفعّل مسبقًا" });
-    }
-    user.phoneVerified = true;
-    user.verificationCode = null;
-    await user.save();
-    if (user.role === "doctor") {
-      const profile = await DoctorProfile.findOne({ user: user._id });
-      if (profile) {
-        // Doctor accounts must be approved by admin before they become active.
-        // Keep status as-is (usually "pending") and do not enable bookings here.
-        if (profile.status !== "active") {
-          profile.isAcceptingBookings = false;
-        }
-        await profile.save();
-
-        // Do not issue tokens to doctors until admin approval.
-        if (profile.status !== "active") {
-          return res.json({
-            message: "تم إنشاء الحساب وبانتظار موافقة الادمن",
-            user: {
-              id: user._id,
-              name: user.name,
-              phone: user.phone,
-              role: user.role,
-              doctorProfile: user.doctorProfile,
-              age: user.age,
-            },
-          });
-        }
-      }
-    }
-    const token = generateToken(user);
-    return res.json({
-      message: "تم تفعيل رقم الجوال مباشرة (بدون رمز)",
-      user: {
-        id: user._id,
-        name: user.name,
-        phone: user.phone,
-        role: user.role,
-        doctorProfile: user.doctorProfile,
-        age: user.age,
-      },
-      token,
-    });
-  } catch (err) {
-    console.error("Verify error:", err);
-    return res.status(500).json({ message: "خطأ في الخادم، حاول لاحقًا" });
-  }
+  return res
+    .status(410)
+    .json({ message: "تم تعطيل OTP مؤقتاً. سجل دخولك مباشرة برقمك وكلمة المرور." });
 });
 
 /**
@@ -320,11 +267,11 @@ router.post("/login", async (req, res) => {
       return res.status(401).json({ message: "رقم الجوال أو كلمة المرور غير صحيحة" });
     }
 
-    // إذا ما مفعل الإيميل
+    // OTP verification is currently disabled; auto-verify on successful login.
     if (!user.phoneVerified) {
-      return res.status(403).json({
-        message: "يجب تفعيل رقم الجوال قبل تسجيل الدخول.",
-      });
+      user.phoneVerified = true;
+      user.verificationCode = null;
+      await user.save();
     }
 
     // Admin hard lock: only the configured ADMIN_PHONE can login as admin.
@@ -339,7 +286,7 @@ router.post("/login", async (req, res) => {
     // Doctors must be approved + subscription active before they can login.
     if (user.role === "doctor") {
       const profile = await DoctorProfile.findOne({ user: user._id }).select(
-        "status subscriptionEndsAt subscriptionGraceEndsAt"
+        "status isAcceptingBookings isChatEnabled subscriptionEndsAt subscriptionGraceEndsAt"
       );
       if (!profile) {
         return res.status(403).json({ message: "Doctor profile not found" });
@@ -349,11 +296,23 @@ router.post("/login", async (req, res) => {
       }
       // Require an active subscription.
       if (!profile.subscriptionEndsAt) {
+        try {
+          profile.status = "inactive";
+          profile.isAcceptingBookings = false;
+          profile.isChatEnabled = false;
+          await profile.save();
+        } catch (e) {}
         return res.status(403).json({ message: "لا يوجد اشتراك" });
       }
       const cutoff = profile.subscriptionGraceEndsAt || profile.subscriptionEndsAt;
       const cutoffMs = new Date(cutoff).getTime();
       if (!Number.isNaN(cutoffMs) && Date.now() > cutoffMs) {
+        try {
+          profile.status = "inactive";
+          profile.isAcceptingBookings = false;
+          profile.isChatEnabled = false;
+          await profile.save();
+        } catch (e) {}
         return res.status(403).json({ message: "الاشتراك منتهي" });
       }
     }
@@ -387,64 +346,9 @@ router.post("/login", async (req, res) => {
  * -----------------------------------------
  */
 router.post("/login/verify", async (req, res) => {
-  // تم تعطيل التحقق من كود الدخول مؤقتاً
-  try {
-    const { phone } = req.body;
-    if (!phone) {
-      return res.status(400).json({ message: "رقم الجوال مطلوب" });
-    }
-    const user = await User.findOne({ phone: normalizePhone(phone) });
-    if (!user) {
-      return res.status(400).json({ message: "المستخدم غير موجود" });
-    }
-
-    // Never allow admin token issuance via this shortcut.
-    if (user.role === "admin") {
-      return res.status(403).json({ message: "تم تعطيل تسجيل دخول الأدمن بهذه الطريقة" });
-    }
-
-    // Doctors must be approved + subscription active before they can login.
-    if (user.role === "doctor") {
-      const profile = await DoctorProfile.findOne({ user: user._id }).select(
-        "status subscriptionEndsAt subscriptionGraceEndsAt"
-      );
-      if (!profile) {
-        return res.status(403).json({ message: "Doctor profile not found" });
-      }
-      if (profile.status !== "active") {
-        return res.status(403).json({ message: "بانتظار موافقة الادمن" });
-      }
-      if (!profile.subscriptionEndsAt) {
-        return res.status(403).json({ message: "لا يوجد اشتراك" });
-      }
-      const cutoff = profile.subscriptionGraceEndsAt || profile.subscriptionEndsAt;
-      const cutoffMs = new Date(cutoff).getTime();
-      if (!Number.isNaN(cutoffMs) && Date.now() > cutoffMs) {
-        return res.status(403).json({ message: "الاشتراك منتهي" });
-      }
-    }
-
-    const token = jwt.sign(
-      { id: user._id, phone: user.phone, role: user.role },
-      process.env.JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || "7d" }
-    );
-    return res.json({
-      message: "تم تسجيل الدخول مباشرة (بدون رمز)",
-      user: {
-        id: user._id,
-        name: user.name,
-        phone: user.phone,
-        role: user.role,
-        doctorProfile: user.doctorProfile,
-        age: user.age,
-      },
-      token,
-    });
-  } catch (err) {
-    console.error("Login verify error:", err);
-    return res.status(500).json({ message: "خطأ في الخادم، حاول لاحقًا" });
-  }
+  return res
+    .status(410)
+    .json({ message: "تم تعطيل OTP مؤقتاً. استخدم تسجيل الدخول برقمك وكلمة المرور." });
 });
 
 /**

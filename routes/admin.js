@@ -243,6 +243,18 @@ router.patch(
       if (status === "active") {
         // When admin approves, allow bookings by default.
         doctor.isAcceptingBookings = true;
+
+        // Also ensure linked user is marked as phone-verified (OTP currently disabled).
+        try {
+          const linkedUser = await User.findById(doctor.user);
+          if (linkedUser && !linkedUser.phoneVerified) {
+            linkedUser.phoneVerified = true;
+            linkedUser.verificationCode = null;
+            await linkedUser.save();
+          }
+        } catch (e) {
+          // best-effort
+        }
       }
       if (status === "inactive") {
         doctor.isAcceptingBookings = false;
@@ -406,6 +418,7 @@ router.patch(
       if (!isSubscriptionActive(doc)) {
         doc.status = "inactive";
         doc.isAcceptingBookings = false;
+        doc.isChatEnabled = false;
       }
 
       await doc.save();

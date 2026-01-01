@@ -16,11 +16,11 @@ const normalizePhone = (phone) => {
 
 const isSubscriptionActive = (profile) => {
   if (!profile) return false;
-  // If no end date, treat as active (free/indefinite).
-  if (!profile.subscriptionEndsAt) return true;
+  // No end date means: no active subscription.
+  if (!profile.subscriptionEndsAt) return false;
   const cutoff = profile.subscriptionGraceEndsAt || profile.subscriptionEndsAt;
   const cutoffMs = new Date(cutoff).getTime();
-  if (Number.isNaN(cutoffMs)) return true;
+  if (Number.isNaN(cutoffMs)) return false;
   return Date.now() <= cutoffMs;
 };
 
@@ -59,7 +59,7 @@ const authMiddleware = async function (req, res, next) {
     // If doctor: enforce active status + subscription validity for ALL protected APIs.
     if (userDoc.role === "doctor") {
       const profile = await DoctorProfile.findOne({ user: userDoc._id }).select(
-        "status subscriptionEndsAt subscriptionGraceEndsAt"
+        "status isAcceptingBookings isChatEnabled subscriptionEndsAt subscriptionGraceEndsAt"
       );
       if (!profile) {
         return res.status(403).json({ message: "Doctor profile not found" });
@@ -68,7 +68,14 @@ const authMiddleware = async function (req, res, next) {
         return res.status(403).json({ message: "Doctor account is inactive" });
       }
       if (!isSubscriptionActive(profile)) {
-        return res.status(403).json({ message: "Subscription expired" });
+        // Hard stop: subscription ended => fully disable account services.
+        try {
+          profile.status = "inactive";
+          profile.isAcceptingBookings = false;
+          profile.isChatEnabled = false;
+          await profile.save();
+        } catch (e) {}
+        return res.status(403).json({ message: "الاشتراك منتهي وتم إيقاف الحساب" });
       }
       req.doctorProfileId = String(profile._id);
     }

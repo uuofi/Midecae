@@ -233,6 +233,21 @@ router.post("/verify", async (req, res) => {
           profile.isAcceptingBookings = false;
         }
         await profile.save();
+
+        // Do not issue tokens to doctors until admin approval.
+        if (profile.status !== "active") {
+          return res.json({
+            message: "تم إنشاء الحساب وبانتظار موافقة الادمن",
+            user: {
+              id: user._id,
+              name: user.name,
+              phone: user.phone,
+              role: user.role,
+              doctorProfile: user.doctorProfile,
+              age: user.age,
+            },
+          });
+        }
       }
     }
     const token = generateToken(user);
@@ -386,6 +401,27 @@ router.post("/login/verify", async (req, res) => {
     // Never allow admin token issuance via this shortcut.
     if (user.role === "admin") {
       return res.status(403).json({ message: "تم تعطيل تسجيل دخول الأدمن بهذه الطريقة" });
+    }
+
+    // Doctors must be approved + subscription active before they can login.
+    if (user.role === "doctor") {
+      const profile = await DoctorProfile.findOne({ user: user._id }).select(
+        "status subscriptionEndsAt subscriptionGraceEndsAt"
+      );
+      if (!profile) {
+        return res.status(403).json({ message: "Doctor profile not found" });
+      }
+      if (profile.status !== "active") {
+        return res.status(403).json({ message: "بانتظار موافقة الادمن" });
+      }
+      if (!profile.subscriptionEndsAt) {
+        return res.status(403).json({ message: "لا يوجد اشتراك" });
+      }
+      const cutoff = profile.subscriptionGraceEndsAt || profile.subscriptionEndsAt;
+      const cutoffMs = new Date(cutoff).getTime();
+      if (!Number.isNaN(cutoffMs) && Date.now() > cutoffMs) {
+        return res.status(403).json({ message: "الاشتراك منتهي" });
+      }
     }
 
     const token = jwt.sign(

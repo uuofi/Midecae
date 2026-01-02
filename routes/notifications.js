@@ -21,6 +21,13 @@ router.post("/register-token", authMiddleware, async (req, res) => {
       return res.status(400).json({ error: "Invalid Expo push token" });
     }
 
+    // Ensure this device token isn't still linked to another account.
+    // This prevents receiving notifications for a user that has logged out.
+    await User.updateMany(
+      { expoPushToken, _id: { $ne: req.user.id } },
+      { $set: { expoPushToken: "" } }
+    );
+
     await User.findByIdAndUpdate(
       req.user.id,
       { expoPushToken },
@@ -30,6 +37,27 @@ router.post("/register-token", authMiddleware, async (req, res) => {
     return res.json({ success: true });
   } catch (err) {
     console.error("Error registering push token:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+});
+
+// POST /api/notifications/unregister-token
+// يفك ربط التوكن من المستخدم الحالي (مفيد عند تسجيل الخروج)
+router.post("/unregister-token", authMiddleware, async (req, res) => {
+  try {
+    const { expoPushToken } = req.body || {};
+
+    // If a token is provided, only clear if it matches the current stored token.
+    // If not provided, clear unconditionally.
+    const filter = { _id: req.user.id };
+    if (expoPushToken) {
+      filter.expoPushToken = String(expoPushToken).trim();
+    }
+
+    await User.updateOne(filter, { $set: { expoPushToken: "" } });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("Error unregistering push token:", err);
     return res.status(500).json({ error: "Server error" });
   }
 });

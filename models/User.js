@@ -85,6 +85,13 @@ const userSchema = new mongoose.Schema(
       default: "",
       trim: true,
     },
+
+    // Auth session invalidation (logout everywhere / password change)
+    tokenVersion: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
   },
   { timestamps: true }
 );

@@ -37,10 +37,22 @@ const authMiddleware = async function (req, res, next) {
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
+    // Reject refresh tokens for API access
+    if (decoded?.typ && decoded.typ !== "access") {
+      return res.status(401).json({ message: "Token type is not valid" });
+    }
+
     // Always re-load user from DB so role changes apply immediately.
-    const userDoc = await User.findById(decoded.id).select("role phone isBlocked");
+    const userDoc = await User.findById(decoded.id).select("role phone isBlocked tokenVersion");
     if (!userDoc) {
       return res.status(401).json({ message: "User not found" });
+    }
+
+    // Invalidate old tokens after logout-all / password change
+    const tokenVer = typeof decoded?.ver === "number" ? decoded.ver : 0;
+    const userVer = typeof userDoc?.tokenVersion === "number" ? userDoc.tokenVersion : 0;
+    if (tokenVer !== userVer) {
+      return res.status(401).json({ message: "Session expired" });
     }
 
     // Patient global block

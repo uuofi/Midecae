@@ -2,12 +2,14 @@
 const express = require("express");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const crypto = require("crypto");
 const User = require("../models/User");
 const DoctorProfile = require("../models/DoctorProfile");
 const Appointment = require("../models/Appointment");
 const DoctorService = require("../models/DoctorService");
 const Block = require("../models/Block");
 const Message = require("../models/Message");
+const AuditLog = require("../models/AuditLog");
 const authMiddleware = require("../middleware/authMiddleware");
 const sendSms = require("../utils/sendSms");
 
@@ -47,13 +49,69 @@ const ensureDoctorPrefix = (rawName = "") => {
 
 const router = express.Router();
 
-// دالة توليد توكن
+const isSubscriptionActive = (profile) => {
+  if (!profile) return false;
+  if (!profile.subscriptionEndsAt) return false;
+  const cutoff = profile.subscriptionGraceEndsAt || profile.subscriptionEndsAt;
+  const cutoffMs = new Date(cutoff).getTime();
+  if (Number.isNaN(cutoffMs)) return false;
+  return Date.now() <= cutoffMs;
+};
+
+const audit = async (req, { actorUser, actorName, action, entityType, entityId, entityName, details }) => {
+  try {
+    await AuditLog.create({
+      actorUser: actorUser || null,
+      actorName: actorName || "",
+      action,
+      entityType,
+      entityId: entityId ? String(entityId) : "",
+      entityName: entityName || "",
+      details: details || "",
+      ip: req?.ip || "",
+    });
+  } catch (e) {
+    // ignore audit failures
+  }
+};
+
+// Access token
 const generateToken = (user) =>
   jwt.sign(
-    { id: user._id, phone: user.phone, role: user.role },
+    {
+      id: user._id,
+      phone: user.phone,
+      role: user.role,
+      ver: typeof user.tokenVersion === "number" ? user.tokenVersion : 0,
+      typ: "access",
+    },
     process.env.JWT_SECRET,
     { expiresIn: process.env.JWT_EXPIRES_IN || "30d" }
   );
+
+// Refresh token (long lived)
+const generateRefreshToken = (user) =>
+  jwt.sign(
+    {
+      id: user._id,
+      ver: typeof user.tokenVersion === "number" ? user.tokenVersion : 0,
+      typ: "refresh",
+      rnd: crypto.randomBytes(8).toString("hex"),
+    },
+    process.env.JWT_SECRET,
+    { expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || "90d" }
+  );
+
+const ensureDoctorAccessOk = async (user) => {
+  if (!user || user.role !== "doctor") return { ok: true };
+  const profile = await DoctorProfile.findOne({ user: user._id }).select(
+    "status subscriptionEndsAt subscriptionGraceEndsAt isAcceptingBookings isChatEnabled"
+  );
+  if (!profile) return { ok: false, status: 403, message: "Doctor profile not found" };
+  if (profile.status !== "active") return { ok: false, status: 403, message: "بانتظار موافقة الادمن" };
+  if (!isSubscriptionActive(profile)) return { ok: false, status: 403, message: "الاشتراك منتهي" };
+  return { ok: true };
+};
 
 /**
  * @route   POST /api/auth/register
@@ -159,6 +217,7 @@ router.post("/register", async (req, res) => {
       verificationCode: null,
       role,
       age: age !== undefined ? Number(age) : undefined,
+      tokenVersion: 0,
     });
 
     if (role === "doctor") {
@@ -211,6 +270,16 @@ router.post("/register", async (req, res) => {
           }
 
     const token = generateToken(user);
+    const refreshToken = generateRefreshToken(user);
+    await audit(req, {
+      actorUser: user._id,
+      actorName: user.name,
+      action: "REGISTER",
+      entityType: "User",
+      entityId: user._id,
+      entityName: user.name,
+      details: `role=${user.role}`,
+    });
     return res.status(201).json({
       message: "تم إنشاء الحساب بنجاح",
       user: {
@@ -222,6 +291,7 @@ router.post("/register", async (req, res) => {
         age: user.age,
       },
       token,
+      refreshToken,
     });
   } catch (err) {
     console.error("Register error:", err);
@@ -306,42 +376,20 @@ router.post("/login", async (req, res) => {
       }
     }
 
-    // تجاوز خطوة إرسال كود الدخول
-    // Doctors must be approved + subscription active before they can login.
-    if (user.role === "doctor") {
-      const profile = await DoctorProfile.findOne({ user: user._id }).select(
-        "status isAcceptingBookings isChatEnabled subscriptionEndsAt subscriptionGraceEndsAt"
-      );
-      if (!profile) {
-        return res.status(403).json({ message: "Doctor profile not found" });
-      }
-      if (profile.status !== "active") {
-        return res.status(403).json({ message: "بانتظار موافقة الادمن" });
-      }
-      // Require an active subscription.
-      if (!profile.subscriptionEndsAt) {
-        try {
-          profile.status = "inactive";
-          profile.isAcceptingBookings = false;
-          profile.isChatEnabled = false;
-          await profile.save();
-        } catch (e) {}
-        return res.status(403).json({ message: "لا يوجد اشتراك" });
-      }
-      const cutoff = profile.subscriptionGraceEndsAt || profile.subscriptionEndsAt;
-      const cutoffMs = new Date(cutoff).getTime();
-      if (!Number.isNaN(cutoffMs) && Date.now() > cutoffMs) {
-        try {
-          profile.status = "inactive";
-          profile.isAcceptingBookings = false;
-          profile.isChatEnabled = false;
-          await profile.save();
-        } catch (e) {}
-        return res.status(403).json({ message: "الاشتراك منتهي" });
-      }
-    }
+    const doctorCheck = await ensureDoctorAccessOk(user);
+    if (!doctorCheck.ok) return res.status(doctorCheck.status).json({ message: doctorCheck.message });
 
     const token = generateToken(user);
+    const refreshToken = generateRefreshToken(user);
+    await audit(req, {
+      actorUser: user._id,
+      actorName: user.name,
+      action: "LOGIN",
+      entityType: "User",
+      entityId: user._id,
+      entityName: user.name,
+      details: `role=${user.role}`,
+    });
     return res.json({
       message: "تم تسجيل الدخول مباشرة (بدون رمز)",
       user: {
@@ -353,6 +401,7 @@ router.post("/login", async (req, res) => {
         age: user.age,
       },
       token,
+      refreshToken,
     });
   } catch (err) {
     console.error("Login error:", err);
@@ -369,6 +418,63 @@ router.post("/login/verify", async (req, res) => {
   return res
     .status(410)
     .json({ message: "تم تعطيل OTP مؤقتاً. استخدم تسجيل الدخول برقمك وكلمة المرور." });
+});
+
+/**
+ * @route   POST /api/auth/refresh
+ * @desc    Exchange refresh token for a new access token
+ * @access  Public
+ */
+router.post("/refresh", async (req, res) => {
+  try {
+    const { refreshToken } = req.body || {};
+    if (!refreshToken) return res.status(400).json({ message: "Refresh token مطلوب" });
+
+    let decoded;
+    try {
+      decoded = jwt.verify(refreshToken, process.env.JWT_SECRET);
+    } catch (e) {
+      return res.status(401).json({ message: "Refresh token غير صالح" });
+    }
+
+    if (decoded?.typ !== "refresh") {
+      return res.status(401).json({ message: "Refresh token غير صالح" });
+    }
+
+    const user = await User.findById(decoded.id).select("role phone isBlocked tokenVersion name doctorProfile age");
+    if (!user) return res.status(401).json({ message: "المستخدم غير موجود" });
+
+    const tokenVer = typeof decoded?.ver === "number" ? decoded.ver : 0;
+    const userVer = typeof user?.tokenVersion === "number" ? user.tokenVersion : 0;
+    if (tokenVer !== userVer) {
+      return res.status(401).json({ message: "Session expired" });
+    }
+
+    if (user.role === "patient" && user.isBlocked) {
+      return res.status(403).json({ message: "الحساب محظور" });
+    }
+
+    const doctorCheck = await ensureDoctorAccessOk(user);
+    if (!doctorCheck.ok) return res.status(doctorCheck.status).json({ message: doctorCheck.message });
+
+    const newToken = generateToken(user);
+    const newRefreshToken = generateRefreshToken(user);
+
+    await audit(req, {
+      actorUser: user._id,
+      actorName: user.name,
+      action: "REFRESH",
+      entityType: "User",
+      entityId: user._id,
+      entityName: user.name,
+      details: `role=${user.role}`,
+    });
+
+    return res.json({ token: newToken, refreshToken: newRefreshToken });
+  } catch (err) {
+    console.error("Refresh error:", err);
+    return res.status(500).json({ message: "خطأ في الخادم، حاول لاحقًا" });
+  }
 });
 
 /**
@@ -437,6 +543,16 @@ router.patch("/me", authMiddleware, async (req, res) => {
 
     await user.save();
 
+    await audit(req, {
+      actorUser: user._id,
+      actorName: user.name,
+      action: "UPDATE_PROFILE",
+      entityType: "User",
+      entityId: user._id,
+      entityName: user.name,
+      details: "updated basic profile",
+    });
+
     return res.json({
       message: "تم تحديث الحساب بنجاح",
       user: {
@@ -456,6 +572,142 @@ router.patch("/me", authMiddleware, async (req, res) => {
 });
 
 /**
+ * @route   PATCH /api/auth/me/password
+ * @desc    Change password (requires current password)
+ * @access  Private
+ */
+router.patch("/me/password", authMiddleware, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ message: "كلمة المرور الحالية والجديدة مطلوبة" });
+    }
+    if (!isStrongPassword(newPassword)) {
+      return res.status(400).json({ message: "كلمة المرور الجديدة ضعيفة (حروف كبيرة/صغيرة + رقم و 8 أحرف+)" });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: "المستخدم غير موجود" });
+
+    const match = await bcrypt.compare(String(currentPassword), user.password);
+    if (!match) return res.status(401).json({ message: "كلمة المرور الحالية غير صحيحة" });
+
+    user.password = await bcrypt.hash(String(newPassword), 12);
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
+    await user.save();
+
+    const token = generateToken(user);
+    const refreshToken = generateRefreshToken(user);
+
+    await audit(req, {
+      actorUser: user._id,
+      actorName: user.name,
+      action: "CHANGE_PASSWORD",
+      entityType: "User",
+      entityId: user._id,
+      entityName: user.name,
+      details: "password changed + session invalidated",
+    });
+
+    return res.json({ message: "تم تغيير كلمة المرور", token, refreshToken });
+  } catch (err) {
+    console.error("Change password error:", err);
+    return res.status(500).json({ message: "خطأ في الخادم، حاول لاحقًا" });
+  }
+});
+
+/**
+ * @route   POST /api/auth/logout-all
+ * @desc    Logout from all devices by bumping tokenVersion
+ * @access  Private
+ */
+router.post("/logout-all", authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: "المستخدم غير موجود" });
+    user.tokenVersion = (user.tokenVersion || 0) + 1;
+    await user.save();
+
+    await audit(req, {
+      actorUser: user._id,
+      actorName: user.name,
+      action: "LOGOUT_ALL",
+      entityType: "User",
+      entityId: user._id,
+      entityName: user.name,
+      details: "tokenVersion bumped",
+    });
+
+    return res.json({ message: "تم تسجيل الخروج من كل الأجهزة" });
+  } catch (err) {
+    console.error("Logout-all error:", err);
+    return res.status(500).json({ message: "خطأ في الخادم، حاول لاحقًا" });
+  }
+});
+
+/**
+ * @route   GET /api/auth/activity
+ * @desc    Get recent activity log for current user
+ * @access  Private
+ */
+router.get("/activity", authMiddleware, async (req, res) => {
+  try {
+    const limit = Math.max(1, Math.min(Number(req.query.limit || 30), 100));
+    const logs = await AuditLog.find({ actorUser: req.user.id })
+      .sort({ timestamp: -1 })
+      .limit(limit)
+      .select("timestamp action entityType entityName details ip");
+    return res.json({ logs });
+  } catch (err) {
+    console.error("Activity error:", err);
+    return res.status(500).json({ message: "خطأ في الخادم، حاول لاحقًا" });
+  }
+});
+
+/**
+ * @route   GET /api/auth/export
+ * @desc    Export my account data (JSON)
+ * @access  Private
+ */
+router.get("/export", authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id).select("-password");
+    if (!user) return res.status(404).json({ message: "المستخدم غير موجود" });
+
+    let doctorProfile = null;
+    if (user.role === "doctor") {
+      doctorProfile = await DoctorProfile.findOne({ user: user._id });
+    }
+
+    const query = user.role === "doctor" && user.doctorProfile ? { doctorProfile: user.doctorProfile } : { user: user._id };
+    const appointments = await Appointment.find(query)
+      .sort({ createdAt: -1 })
+      .limit(200)
+      .select("doctorName specialty appointmentDate appointmentTime status bookingNumber doctorQueueNumber notes doctorNote doctorPrescriptions service createdAt");
+
+    await audit(req, {
+      actorUser: user._id,
+      actorName: user.name,
+      action: "EXPORT",
+      entityType: "User",
+      entityId: user._id,
+      entityName: user.name,
+      details: `appointments=${appointments.length}`,
+    });
+
+    return res.json({
+      exportedAt: new Date().toISOString(),
+      user,
+      doctorProfile,
+      appointments,
+    });
+  } catch (err) {
+    console.error("Export error:", err);
+    return res.status(500).json({ message: "خطأ في الخادم، حاول لاحقًا" });
+  }
+});
+
+/**
  * @route   DELETE /api/auth/me
  * @desc    Delete current user account (patient/doctor) and related data
  * @access  Private
@@ -466,6 +718,15 @@ router.delete("/me", authMiddleware, async (req, res) => {
     const user = await User.findById(userId);
 
     if (!user) return res.status(404).json({ message: "المستخدم غير موجود" });
+
+    const { password } = req.body || {};
+    if (!password) {
+      return res.status(400).json({ message: "كلمة المرور مطلوبة لتأكيد حذف الحساب" });
+    }
+    const match = await bcrypt.compare(String(password), user.password);
+    if (!match) {
+      return res.status(401).json({ message: "كلمة المرور غير صحيحة" });
+    }
 
     // Resolve doctorProfile id if applicable
     let doctorProfileId = user.doctorProfile || null;
@@ -503,6 +764,16 @@ router.delete("/me", authMiddleware, async (req, res) => {
 
     // Finally delete user
     await User.deleteOne({ _id: userId });
+
+    await audit(req, {
+      actorUser: userId,
+      actorName: user.name,
+      action: "DELETE_ACCOUNT",
+      entityType: "User",
+      entityId: userId,
+      entityName: user.name,
+      details: `role=${user.role}`,
+    });
 
     return res.json({ message: "تم حذف الحساب بنجاح" });
   } catch (err) {

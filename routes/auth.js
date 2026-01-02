@@ -4,6 +4,10 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const DoctorProfile = require("../models/DoctorProfile");
+const Appointment = require("../models/Appointment");
+const DoctorService = require("../models/DoctorService");
+const Block = require("../models/Block");
+const Message = require("../models/Message");
 const authMiddleware = require("../middleware/authMiddleware");
 const sendSms = require("../utils/sendSms");
 
@@ -447,6 +451,62 @@ router.patch("/me", authMiddleware, async (req, res) => {
     });
   } catch (err) {
     console.error("Update profile error:", err);
+    return res.status(500).json({ message: "خطأ في الخادم، حاول لاحقًا" });
+  }
+});
+
+/**
+ * @route   DELETE /api/auth/me
+ * @desc    Delete current user account (patient/doctor) and related data
+ * @access  Private
+ */
+router.delete("/me", authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const user = await User.findById(userId);
+
+    if (!user) return res.status(404).json({ message: "المستخدم غير موجود" });
+
+    // Resolve doctorProfile id if applicable
+    let doctorProfileId = user.doctorProfile || null;
+    if (user.role === "doctor" && !doctorProfileId) {
+      const profile = await DoctorProfile.findOne({ user: userId }).select("_id");
+      doctorProfileId = profile?._id || null;
+    }
+
+    const appointmentQuery =
+      user.role === "doctor" && doctorProfileId
+        ? { doctorProfile: doctorProfileId }
+        : { user: userId };
+
+    const appts = await Appointment.find(appointmentQuery).select("_id");
+    const appointmentIds = appts.map((a) => a._id);
+
+    // Remove chat messages related to this user or their appointments
+    const messageOr = [{ senderId: userId }];
+    if (appointmentIds.length) {
+      messageOr.push({ appointmentId: { $in: appointmentIds } });
+    }
+    await Message.deleteMany({ $or: messageOr });
+
+    // Remove blocks where the user is doctor or patient
+    await Block.deleteMany({ $or: [{ doctor: userId }, { patient: userId }] });
+
+    // Remove appointments
+    await Appointment.deleteMany(appointmentQuery);
+
+    // Doctor extras
+    if (doctorProfileId) {
+      await DoctorService.deleteMany({ doctorProfile: doctorProfileId });
+      await DoctorProfile.deleteOne({ _id: doctorProfileId });
+    }
+
+    // Finally delete user
+    await User.deleteOne({ _id: userId });
+
+    return res.json({ message: "تم حذف الحساب بنجاح" });
+  } catch (err) {
+    console.error("Delete account error:", err);
     return res.status(500).json({ message: "خطأ في الخادم، حاول لاحقًا" });
   }
 });

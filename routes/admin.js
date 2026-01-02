@@ -4,6 +4,7 @@ const DoctorProfile = require("../models/DoctorProfile");
 const mongoose = require("mongoose");
 const User = require("../models/User");
 const AuditLog = require("../models/AuditLog");
+const bcrypt = require("bcryptjs");
 
 const router = express.Router();
 
@@ -62,6 +63,13 @@ const ensureDoctorPrefix = (rawName = "") => {
   const stripped = prefixPattern.test(name) ? name.replace(prefixPattern, "").trim() : name;
   return `د. ${stripped}`;
 };
+
+const isStrongPassword = (pwd) =>
+  typeof pwd === "string" &&
+  pwd.length >= 8 &&
+  /[A-Z]/.test(pwd) &&
+  /[a-z]/.test(pwd) &&
+  /\d/.test(pwd);
 
 const isSubscriptionActive = (profile) => {
   if (!profile) return false;
@@ -169,16 +177,40 @@ router.patch(
         const v = req.body.displayName.trim();
         if (v) doctor.displayName = ensureDoctorPrefix(v);
       }
+      if (typeof req.body.specialty === "string") doctor.specialty = req.body.specialty.trim();
+      if (typeof req.body.specialtySlug === "string") doctor.specialtySlug = req.body.specialtySlug.trim();
+      if (typeof req.body.specialtyLabel === "string") doctor.specialtyLabel = req.body.specialtyLabel.trim();
       if (typeof req.body.location === "string") doctor.location = req.body.location.trim();
       if (typeof req.body.licenseNumber === "string") doctor.licenseNumber = req.body.licenseNumber.trim();
-      if (typeof req.body.secretaryPhone === "string") doctor.secretaryPhone = req.body.secretaryPhone.trim();
+      if (typeof req.body.secretaryPhone === "string") {
+        if (req.body.secretaryPhone.trim() && !isValidIraqiPhone(req.body.secretaryPhone)) {
+          return res.status(400).json({ message: "صيغة رقم السكرتير غير صحيحة" });
+        }
+        doctor.secretaryPhone = req.body.secretaryPhone.trim() ? normalizePhone(req.body.secretaryPhone) : "";
+      }
       if (typeof req.body.avatarUrl === "string") doctor.avatarUrl = req.body.avatarUrl.trim();
+      if (typeof req.body.certification === "string") doctor.certification = req.body.certification;
+      if (typeof req.body.cv === "string") doctor.cv = req.body.cv;
+      if (typeof req.body.bio === "string") doctor.bio = req.body.bio;
       if (typeof req.body.consultationFee !== "undefined") {
         const fee = Number(req.body.consultationFee);
         if (!Number.isFinite(fee) || fee < 0) {
           return res.status(400).json({ message: "consultationFee must be a non-negative number" });
         }
         doctor.consultationFee = fee;
+      }
+
+      if (req.body.schedule && typeof req.body.schedule === "object") {
+        const s = req.body.schedule;
+        if (Array.isArray(s.activeDays)) doctor.schedule.activeDays = s.activeDays;
+        if (typeof s.startTime === "string") doctor.schedule.startTime = s.startTime;
+        if (typeof s.endTime === "string") doctor.schedule.endTime = s.endTime;
+        if (typeof s.breakEnabled === "boolean") doctor.schedule.breakEnabled = s.breakEnabled;
+        if (typeof s.breakFrom === "string") doctor.schedule.breakFrom = s.breakFrom;
+        if (typeof s.breakTo === "string") doctor.schedule.breakTo = s.breakTo;
+        if (typeof s.duration === "number") doctor.schedule.duration = s.duration;
+        if (typeof s.allowOnline === "boolean") doctor.schedule.allowOnline = s.allowOnline;
+        if (typeof s.emergency === "boolean") doctor.schedule.emergency = s.emergency;
       }
 
       // User fields
@@ -216,6 +248,168 @@ router.patch(
       return res.json({ message: "Updated" });
     } catch (err) {
       console.error("Admin update doctor profile error:", err?.message);
+      return res.status(500).json({ message: "Server error" });
+    }
+  }
+);
+
+// Admin: create doctor (user + profile)
+router.post(
+  "/doctors",
+  authMiddleware,
+  authMiddleware.requireRole("admin"),
+  async (req, res) => {
+    try {
+      const {
+        name,
+        phone,
+        email,
+        password,
+        doctorSpecialty,
+        doctorSpecialtySlug,
+        licenseNumber,
+        avatarUrl,
+        location,
+        certification,
+        cv,
+        secretaryPhone,
+        consultationFee,
+        status = "active",
+      } = req.body || {};
+
+      if (!name || !phone || !password) {
+        return res.status(400).json({ message: "الاسم ورقم الجوال وكلمة المرور مطلوبة" });
+      }
+      if (!doctorSpecialty || !doctorSpecialtySlug || !licenseNumber || !avatarUrl || !location || !certification || !cv) {
+        return res.status(400).json({ message: "بيانات الطبيب ناقصة" });
+      }
+      if (!secretaryPhone) {
+        return res.status(400).json({ message: "رقم السكرتير مطلوب" });
+      }
+      if (!isValidIraqiPhone(phone)) {
+        return res.status(400).json({ message: "صيغة رقم الجوال غير صحيحة" });
+      }
+      if (!isValidIraqiPhone(secretaryPhone)) {
+        return res.status(400).json({ message: "صيغة رقم السكرتير غير صحيحة" });
+      }
+      if (!isStrongPassword(password)) {
+        return res.status(400).json({ message: "كلمة المرور يجب أن تكون 8 أحرف على الأقل وتحتوي حروف كبيرة وصغيرة ورقم" });
+      }
+      const allowedStatus = new Set(["pending", "active", "inactive"]);
+      if (!allowedStatus.has(status)) {
+        return res.status(400).json({ message: "Invalid status" });
+      }
+
+      const normalizedPhone = normalizePhone(phone);
+      const existing = await User.findOne({ phone: normalizedPhone });
+      if (existing) return res.status(409).json({ message: "رقم الجوال مسجل مسبقًا" });
+
+      const fee = Number(consultationFee);
+      if (!Number.isFinite(fee) || fee < 0) {
+        return res.status(400).json({ message: "أتعاب الاستشارة يجب أن تكون رقمًا غير سالب" });
+      }
+
+      const hashed = await bcrypt.hash(String(password), 12);
+      const doctorSafeName = ensureDoctorPrefix(name);
+      const user = await User.create({
+        name: doctorSafeName,
+        phone: normalizedPhone,
+        email: email ? String(email).toLowerCase().trim() : undefined,
+        password: hashed,
+        phoneVerified: true,
+        verificationCode: null,
+        role: "doctor",
+        tokenVersion: 0,
+      });
+
+      const doctorProfile = await DoctorProfile.create({
+        user: user._id,
+        displayName: doctorSafeName,
+        specialty: doctorSpecialty,
+        specialtySlug: doctorSpecialtySlug,
+        specialtyLabel: doctorSpecialty,
+        licenseNumber,
+        avatarUrl,
+        location,
+        certification,
+        cv,
+        secretaryPhone: normalizePhone(secretaryPhone),
+        bio: cv,
+        consultationFee: fee,
+        status,
+        isAcceptingBookings: status === "active",
+        isChatEnabled: status !== "inactive",
+        subscriptionStartsAt: null,
+        subscriptionEndsAt: null,
+        subscriptionGraceEndsAt: null,
+      });
+
+      user.doctorProfile = doctorProfile._id;
+      await user.save();
+
+      await logAdminAction(req, {
+        action: "CREATE",
+        entityType: "Doctor",
+        entityId: String(doctorProfile._id),
+        entityName: safeName(doctorProfile.displayName),
+        details: "Created doctor",
+      });
+
+      return res.status(201).json({ message: "Created", doctorProfileId: doctorProfile._id, userId: user._id });
+    } catch (err) {
+      console.error("Admin create doctor error:", err?.message);
+      return res.status(500).json({ message: "Server error" });
+    }
+  }
+);
+
+// Admin: delete doctor and related data
+router.delete(
+  "/doctors/:id",
+  authMiddleware,
+  authMiddleware.requireRole("admin"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ message: "Invalid doctor id" });
+      }
+
+      const doctorProfile = await DoctorProfile.findById(id);
+      if (!doctorProfile) return res.status(404).json({ message: "Doctor not found" });
+      const userId = doctorProfile.user;
+
+      const Appointment = require("../models/Appointment");
+      const DoctorService = require("../models/DoctorService");
+      const Block = require("../models/Block");
+      const Message = require("../models/Message");
+
+      const appts = await Appointment.find({ doctorProfile: doctorProfile._id }).select("_id");
+      const appointmentIds = appts.map((a) => a._id);
+
+      const messageOr = [{ senderId: userId }];
+      if (appointmentIds.length) {
+        messageOr.push({ appointmentId: { $in: appointmentIds } });
+      }
+      await Message.deleteMany({ $or: messageOr });
+
+      await Block.deleteMany({ $or: [{ doctor: userId }, { patient: userId }] });
+      await Appointment.deleteMany({ doctorProfile: doctorProfile._id });
+      await DoctorService.deleteMany({ doctorProfile: doctorProfile._id });
+      await DoctorProfile.deleteOne({ _id: doctorProfile._id });
+      await User.deleteOne({ _id: userId });
+
+      await logAdminAction(req, {
+        action: "DELETE",
+        entityType: "Doctor",
+        entityId: String(id),
+        entityName: safeName(doctorProfile.displayName),
+        details: "Deleted doctor",
+      });
+
+      return res.json({ message: "Deleted" });
+    } catch (err) {
+      console.error("Admin delete doctor error:", err?.message);
       return res.status(500).json({ message: "Server error" });
     }
   }

@@ -472,6 +472,7 @@ router.post("/", authMiddleware, async (req, res) => {
 router.get("/", authMiddleware, async (req, res) => {
   try {
     const appointments = await Appointment.find({ user: req.user.id })
+      .select("-qrCode -qrPayload")
       .populate({
         path: "doctorProfile",
         select:
@@ -493,8 +494,17 @@ router.get("/", authMiddleware, async (req, res) => {
       }
     });
 
-    // backfill QR for legacy bookings without QR
-    await Promise.all(appointments.map((appt) => ensureQrForAppointment(appt)));
+    // backfill booking number for legacy bookings (keep this lightweight)
+    await Promise.all(
+      appointments
+        .filter(
+          (appt) =>
+            !appt.bookingNumber ||
+            (typeof appt.bookingNumber === "string" &&
+              !isNumericBooking(appt.bookingNumber))
+        )
+        .map((appt) => ensureBookingNumber(appt))
+    );
 
     // For patient-facing responses, show the booking number the doctor sees
     // (per-doctor queue number) when available. Do not persist this override;
@@ -519,6 +529,52 @@ router.get("/", authMiddleware, async (req, res) => {
     return res.json({ appointments });
   } catch (err) {
     console.error("Fetch appointments error:", err.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+/**
+ * @route GET /api/appointments/:id
+ * @desc  Get one appointment details (includes QR)
+ * @access Private
+ */
+router.get("/:id", authMiddleware, async (req, res) => {
+  try {
+    const appointmentId = req.params.id;
+    if (!appointmentId || !appointmentId.match(/^[0-9a-fA-F]{24}$/)) {
+      return res.status(400).json({ message: "Invalid appointment id" });
+    }
+
+    const appointment = await Appointment.findById(appointmentId);
+    if (!appointment) {
+      return res.status(404).json({ message: "Appointment not found" });
+    }
+
+    const isPatient = appointment.user?.toString?.() === req.user.id;
+    let isDoctor = false;
+    if (!isPatient && appointment.doctorProfile) {
+      const dp = await DoctorProfile.findById(appointment.doctorProfile)
+        .select("user")
+        .lean();
+      isDoctor = dp?.user?.toString?.() === req.user.id;
+    }
+
+    if (!isPatient && !isDoctor) {
+      return res.status(403).json({ message: "Not authorized" });
+    }
+
+    await appointment.populate({
+      path: "doctorProfile",
+      select:
+        "avatarUrl location locationLat locationLng displayName specialtyLabel bio consultationFee secretaryPhone",
+    });
+
+    // Generate QR only when requested on details.
+    await ensureQrForAppointment(appointment);
+
+    return res.json({ appointment });
+  } catch (err) {
+    console.error("Fetch appointment details error:", err.message);
     return res.status(500).json({ message: "Server error" });
   }
 });

@@ -4,6 +4,7 @@ const http = require("http");
 const cors = require("cors");
 const dotenv = require("dotenv");
 const helmet = require("helmet");
+const compression = require("compression");
 const rateLimit = require("express-rate-limit");
 const path = require("path");
 const fs = require("fs");
@@ -47,6 +48,9 @@ app.use(
     crossOriginResourcePolicy: { policy: "cross-origin" },
   })
 );
+
+// Compress API responses (JSON, etc.)
+app.use(compression());
 
 // Global rate limit
 const globalLimiter = rateLimit({

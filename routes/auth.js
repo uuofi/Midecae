@@ -165,6 +165,8 @@ router.post("/register", registerLimiter, async (req, res) => {
       licenseNumber,
       avatarUrl,
       location,
+      locationLat,
+      locationLng,
       certification,
       cv,
       secretaryPhone,
@@ -224,6 +226,17 @@ router.post("/register", registerLimiter, async (req, res) => {
       if (!Number.isFinite(parsedFee) || parsedFee <= 0) {
         return res.status(400).json({ message: "أتعاب الاستشارة يجب أن تكون رقمًا موجبًا" });
       }
+
+      if (typeof locationLat !== "undefined" || typeof locationLng !== "undefined") {
+        const lat = Number(locationLat);
+        const lng = Number(locationLng);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+          return res.status(400).json({ message: "إحداثيات الموقع غير صحيحة" });
+        }
+        if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+          return res.status(400).json({ message: "إحداثيات الموقع خارج النطاق" });
+        }
+      }
     }
 
 
@@ -267,6 +280,14 @@ router.post("/register", registerLimiter, async (req, res) => {
         licenseNumber,
         avatarUrl,
         location,
+        locationLat:
+          typeof locationLat !== "undefined" && locationLat !== null && locationLat !== ""
+            ? Number(locationLat)
+            : null,
+        locationLng:
+          typeof locationLng !== "undefined" && locationLng !== null && locationLng !== ""
+            ? Number(locationLng)
+            : null,
         certification,
         cv,
         secretaryPhone: normalizedSecretaryPhone,

@@ -75,6 +75,14 @@ const doctorProfileSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    locationLat: {
+      type: Number,
+      default: null,
+    },
+    locationLng: {
+      type: Number,
+      default: null,
+    },
     certification: {
       type: String,
       default: "",

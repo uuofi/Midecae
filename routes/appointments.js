@@ -475,7 +475,7 @@ router.get("/", authMiddleware, async (req, res) => {
       .populate({
         path: "doctorProfile",
         select:
-          "avatarUrl location displayName specialtyLabel bio consultationFee secretaryPhone",
+          "avatarUrl location locationLat locationLng displayName specialtyLabel bio consultationFee secretaryPhone",
       })
       .sort({ createdAt: -1 });
 

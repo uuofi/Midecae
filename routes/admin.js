@@ -181,6 +181,18 @@ router.patch(
       if (typeof req.body.specialtySlug === "string") doctor.specialtySlug = req.body.specialtySlug.trim();
       if (typeof req.body.specialtyLabel === "string") doctor.specialtyLabel = req.body.specialtyLabel.trim();
       if (typeof req.body.location === "string") doctor.location = req.body.location.trim();
+      if (typeof req.body.locationLat !== "undefined" || typeof req.body.locationLng !== "undefined") {
+        const lat = Number(req.body.locationLat);
+        const lng = Number(req.body.locationLng);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+          return res.status(400).json({ message: "إحداثيات الموقع غير صحيحة" });
+        }
+        if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+          return res.status(400).json({ message: "إحداثيات الموقع خارج النطاق" });
+        }
+        doctor.locationLat = lat;
+        doctor.locationLng = lng;
+      }
       if (typeof req.body.licenseNumber === "string") doctor.licenseNumber = req.body.licenseNumber.trim();
       if (typeof req.body.secretaryPhone === "string") {
         if (req.body.secretaryPhone.trim() && !isValidIraqiPhone(req.body.secretaryPhone)) {
@@ -248,6 +260,56 @@ router.patch(
       return res.json({ message: "Updated" });
     } catch (err) {
       console.error("Admin update doctor profile error:", err?.message);
+      return res.status(500).json({ message: "Server error" });
+    }
+  }
+);
+
+// Admin: reset doctor password (cannot read existing password)
+router.patch(
+  "/doctors/:id/password",
+  authMiddleware,
+  authMiddleware.requireRole("admin"),
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+      if (!mongoose.Types.ObjectId.isValid(id)) {
+        return res.status(400).json({ message: "Invalid doctor id" });
+      }
+
+      const { password } = req.body || {};
+      if (!password) {
+        return res.status(400).json({ message: "كلمة المرور مطلوبة" });
+      }
+      if (!isStrongPassword(password)) {
+        return res.status(400).json({ message: "كلمة المرور يجب أن تكون 8 أحرف على الأقل وتحتوي حروف كبيرة وصغيرة ورقم" });
+      }
+
+      const doctor = await DoctorProfile.findById(id).populate("user", "name phone role tokenVersion password");
+      if (!doctor) return res.status(404).json({ message: "Doctor not found" });
+
+      const user = doctor.user;
+      if (!user || !user._id) return res.status(500).json({ message: "Linked user not found" });
+      if (user.role !== "doctor") {
+        return res.status(400).json({ message: "User is not a doctor" });
+      }
+
+      const hashed = await bcrypt.hash(String(password), 12);
+      user.password = hashed;
+      user.tokenVersion = Number(user.tokenVersion || 0) + 1;
+      await user.save();
+
+      await logAdminAction(req, {
+        action: "PASSWORD_RESET",
+        entityType: "Doctor",
+        entityId: String(doctor._id),
+        entityName: safeName(doctor.displayName || user.name),
+        details: "Admin reset doctor password",
+      });
+
+      return res.json({ message: "Password updated" });
+    } catch (err) {
+      console.error("Admin reset doctor password error:", err?.message);
       return res.status(500).json({ message: "Server error" });
     }
   }

@@ -191,6 +191,8 @@ router.get("/doctors-by-specialty", async (req, res) => {
         contactPhone: profile.user?.phone || profile.secretaryPhone || "",
         avatarUrl: profile.avatarUrl,
         location: profile.location,
+        locationLat: typeof profile.locationLat === "number" ? profile.locationLat : null,
+        locationLng: typeof profile.locationLng === "number" ? profile.locationLng : null,
         role: profile.specialtyLabel || "طبيب",
         schedule: profile.schedule || DEFAULT_SCHEDULE,
         bio: profile.bio,

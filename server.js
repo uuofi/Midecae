@@ -17,6 +17,7 @@ const User = require("./models/User");
 const Block = require("./models/Block");
 const DoctorProfileModel = require("./models/DoctorProfile");
 const { startReminderJobs } = require("./jobs/reminders");
+const authMiddleware = require("./middleware/authMiddleware");
 
 dotenv.config();
 connectDB();
@@ -76,6 +77,74 @@ app.get("/api/health", (req, res) => {
 // Auth + domain routes
 app.use("/api/auth", require("./routes/auth"));
 app.use("/api/appointments", require("./routes/appointments"));
+
+// Doctor profile update override: allows saving map coordinates (lat/lng).
+// (We keep this here because routes/doctors.js has a legacy encoding issue.)
+app.patch("/api/doctors/me/profile", authMiddleware, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.id);
+    if (!user || user.role !== "doctor") {
+      return res.status(403).json({ message: "Restricted to doctors" });
+    }
+
+    const profile = await DoctorProfile.findOne({ user: user._id });
+    if (!profile) {
+      return res.status(404).json({ message: "Doctor profile not found" });
+    }
+
+    const updates = {};
+    const fields = [
+      "displayName",
+      "specialty",
+      "specialtyLabel",
+      "location",
+      "certification",
+      "cv",
+      "licenseNumber",
+      "avatarUrl",
+      "secretaryPhone",
+    ];
+
+    fields.forEach((field) => {
+      if (typeof req.body[field] === "string") {
+        updates[field] = req.body[field].trim();
+      }
+    });
+
+    if (typeof req.body.consultationFee !== "undefined") {
+      const fee = Number(req.body.consultationFee);
+      if (!Number.isNaN(fee)) {
+        updates.consultationFee = fee;
+      }
+    }
+
+    if (typeof req.body.locationLat !== "undefined" || typeof req.body.locationLng !== "undefined") {
+      const lat = Number(req.body.locationLat);
+      const lng = Number(req.body.locationLng);
+      if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+        return res.status(400).json({ message: "إحداثيات الموقع غير صحيحة" });
+      }
+      if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+        return res.status(400).json({ message: "إحداثيات الموقع خارج النطاق" });
+      }
+      updates.locationLat = lat;
+      updates.locationLng = lng;
+    }
+
+    if (!Object.keys(updates).length) {
+      return res.status(400).json({ message: "No profile data provided" });
+    }
+
+    Object.assign(profile, updates);
+    await profile.save();
+
+    return res.json({ doctor: profile });
+  } catch (err) {
+    console.error("Update profile error:", err?.message);
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
 app.use("/api/doctors", require("./routes/doctors"));
 app.use("/api/reports", require("./routes/reports"));
 app.use("/api/messages", require("./routes/messages"));

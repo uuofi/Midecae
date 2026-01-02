@@ -12,6 +12,7 @@ const Message = require("../models/Message");
 const AuditLog = require("../models/AuditLog");
 const authMiddleware = require("../middleware/authMiddleware");
 const sendSms = require("../utils/sendSms");
+const rateLimit = require("express-rate-limit");
 
 const normalizePhone = (phone) => {
   let p = String(phone || "").replace(/\s|-/g, "").trim();
@@ -48,6 +49,39 @@ const ensureDoctorPrefix = (rawName = "") => {
 };
 
 const router = express.Router();
+
+// Rate limiting (defense-in-depth; server.js already limits /api/auth)
+const loginLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "محاولات كثيرة. حاول لاحقاً." },
+});
+
+const registerLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "محاولات كثيرة. حاول لاحقاً." },
+});
+
+const refreshLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "محاولات كثيرة. حاول لاحقاً." },
+});
+
+const passwordLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "محاولات كثيرة. حاول لاحقاً." },
+});
 
 const isSubscriptionActive = (profile) => {
   if (!profile) return false;
@@ -118,7 +152,7 @@ const ensureDoctorAccessOk = async (user) => {
  * @desc    Register user + send verification code
  * @access  Public
  */
-router.post("/register", async (req, res) => {
+router.post("/register", registerLimiter, async (req, res) => {
   try {
     const {
       name,
@@ -331,7 +365,7 @@ router.post("/resend", async (req, res) => {
  *  نتحقق منهم → نرسل كود إلى الإيميل
  * -----------------------------------------
  */
-router.post("/login", async (req, res) => {
+router.post("/login", loginLimiter, async (req, res) => {
   try {
     const { phone, password } = req.body;
 
@@ -425,7 +459,7 @@ router.post("/login/verify", async (req, res) => {
  * @desc    Exchange refresh token for a new access token
  * @access  Public
  */
-router.post("/refresh", async (req, res) => {
+router.post("/refresh", refreshLimiter, async (req, res) => {
   try {
     const { refreshToken } = req.body || {};
     if (!refreshToken) return res.status(400).json({ message: "Refresh token مطلوب" });
@@ -576,7 +610,7 @@ router.patch("/me", authMiddleware, async (req, res) => {
  * @desc    Change password (requires current password)
  * @access  Private
  */
-router.patch("/me/password", authMiddleware, async (req, res) => {
+router.patch("/me/password", passwordLimiter, authMiddleware, async (req, res) => {
   try {
     const { currentPassword, newPassword } = req.body || {};
     if (!currentPassword || !newPassword) {

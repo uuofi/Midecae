@@ -118,6 +118,22 @@ const appointmentSchema = new mongoose.Schema(
         min: 0,
       },
     },
+
+    // Reminders (to avoid duplicate notifications)
+    patientReminderSentAt: {
+      type: Date,
+      default: null,
+    },
+    // Key like: 2026-01-02T10:30
+    patientReminderFor: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    patientReminderHours: {
+      type: Number,
+      default: null,
+    },
   },
   { timestamps: true }
 );

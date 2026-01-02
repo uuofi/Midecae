@@ -16,6 +16,7 @@ const DoctorProfile = require("./models/DoctorProfile");
 const User = require("./models/User");
 const Block = require("./models/Block");
 const DoctorProfileModel = require("./models/DoctorProfile");
+const { startReminderJobs } = require("./jobs/reminders");
 
 dotenv.config();
 connectDB();
@@ -305,4 +306,7 @@ io.on("connection", (socket) => {
   });
 });
 
-server.listen(PORT, '0.0.0.0', () => console.log(`Server running on port ${PORT}`));
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`Server running on port ${PORT}`);
+  startReminderJobs();
+});

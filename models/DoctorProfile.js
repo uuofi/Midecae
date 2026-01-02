@@ -154,6 +154,18 @@ const doctorProfileSchema = new mongoose.Schema(
       ref: "User",
       default: null,
     },
+
+    // Reminders (to avoid duplicate notifications)
+    subscriptionExpiryReminderSentAt: {
+      type: Date,
+      default: null,
+    },
+    // ISO string for the subscriptionEndsAt that was notified
+    subscriptionExpiryReminderFor: {
+      type: String,
+      default: "",
+      trim: true,
+    },
   },
   { timestamps: true }
 );

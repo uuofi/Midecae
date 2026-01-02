@@ -5,6 +5,7 @@ const mongoose = require("mongoose");
 const User = require("../models/User");
 const AuditLog = require("../models/AuditLog");
 const bcrypt = require("bcryptjs");
+const { sendPushToTokens } = require("./notifications");
 
 const router = express.Router();
 
@@ -63,6 +64,82 @@ const ensureDoctorPrefix = (rawName = "") => {
   const stripped = prefixPattern.test(name) ? name.replace(prefixPattern, "").trim() : name;
   return `د. ${stripped}`;
 };
+
+const isValidObjectId = (id) => mongoose.Types.ObjectId.isValid(String(id || ""));
+
+// Admin: push notifications (patients all / doctors all / doctors selected)
+router.post(
+  "/notifications/push",
+  authMiddleware,
+  authMiddleware.requireRole("admin"),
+  async (req, res) => {
+    try {
+      const audience = String(req.body.audience || "").trim();
+      const title = typeof req.body.title === "string" ? req.body.title.trim() : "";
+      const body = typeof req.body.body === "string" ? req.body.body.trim() : "";
+      const data = req.body.data && typeof req.body.data === "object" ? req.body.data : {};
+
+      if (!body) {
+        return res.status(400).json({ message: "نص الإشعار مطلوب" });
+      }
+
+      const baseFilter = { expoPushToken: { $ne: "" } };
+      let userFilter = null;
+      let details = "";
+
+      if (audience === "patients_all") {
+        userFilter = { ...baseFilter, role: "patient" };
+        details = "patients_all";
+      } else if (audience === "doctors_all") {
+        userFilter = { ...baseFilter, role: "doctor" };
+        details = "doctors_all";
+      } else if (audience === "doctors_selected") {
+        const doctorProfileIds = Array.isArray(req.body.doctorProfileIds)
+          ? req.body.doctorProfileIds
+          : [];
+        const validIds = doctorProfileIds
+          .map((id) => String(id))
+          .filter((id) => isValidObjectId(id));
+
+        if (!validIds.length) {
+          return res.status(400).json({ message: "اختر دكتور واحد على الأقل" });
+        }
+
+        userFilter = {
+          ...baseFilter,
+          role: "doctor",
+          doctorProfile: { $in: validIds },
+        };
+        details = `doctors_selected:${validIds.length}`;
+      } else {
+        return res.status(400).json({ message: "audience غير صحيح" });
+      }
+
+      const users = await User.find(userFilter).select("expoPushToken").lean();
+      const tokens = users.map((u) => u.expoPushToken).filter(Boolean);
+
+      const result = await sendPushToTokens(tokens, { title, body, data });
+
+      await logAdminAction(req, {
+        action: "PUSH_NOTIFICATION",
+        entityType: "notifications",
+        entityId: "",
+        entityName: "push",
+        details: `${details} | usersWithToken=${users.length} | ok=${result.successCount} | fail=${result.failureCount}`,
+      });
+
+      return res.json({
+        success: true,
+        audience,
+        usersWithToken: users.length,
+        ...result,
+      });
+    } catch (err) {
+      console.error("Admin push notification error:", err?.message);
+      return res.status(500).json({ message: "Server error" });
+    }
+  }
+);
 
 const isStrongPassword = (pwd) =>
   typeof pwd === "string" &&

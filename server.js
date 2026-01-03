@@ -241,6 +241,20 @@ const decrypt = (payload) => {
 
 const buildReplyMeta = (replyDoc) => {
   if (!replyDoc) return null;
+  if (replyDoc.e2ee) {
+    return {
+      _id: replyDoc._id,
+      text: "",
+      e2ee: {
+        v: typeof replyDoc.e2eeVersion === "number" ? replyDoc.e2eeVersion : 1,
+        alg: replyDoc.e2eeAlg || "x25519-xsalsa20-poly1305",
+        nonce: replyDoc.e2eeNonce || "",
+        ciphertext: replyDoc.e2eeCiphertext || "",
+      },
+      senderType: replyDoc.senderType,
+      deleted: !!replyDoc.deleted,
+    };
+  }
   return {
     _id: replyDoc._id,
     text: replyDoc.deleted ? "" : decrypt(replyDoc.text),
@@ -300,8 +314,8 @@ io.on("connection", (socket) => {
     socket.join(String(appointmentId));
   });
 
-  socket.on("message", async ({ appointmentId, text, replyTo }) => {
-    if (!text || !appointmentId) return;
+  socket.on("message", async ({ appointmentId, text, replyTo, e2ee }) => {
+    if (!appointmentId) return;
     const access = await canAccessAppointment(socket.userId, appointmentId);
     if (!access) return socket.emit("error", AUTH_ERROR);
 
@@ -334,6 +348,53 @@ io.on("connection", (socket) => {
         return socket.emit("error", "Invalid reply target");
       }
     }
+
+    // E2EE path (preferred): store ciphertext + broadcast ciphertext only.
+    if (e2ee && typeof e2ee === "object") {
+      const nonce = String(e2ee.nonce || "").trim();
+      const ciphertext = String(e2ee.ciphertext || "").trim();
+      const alg = String(e2ee.alg || "x25519-xsalsa20-poly1305").trim();
+      const vRaw = e2ee.v;
+      const v = typeof vRaw === "number" ? vRaw : Number(vRaw || 1);
+
+      if (!nonce || !ciphertext) return;
+
+      const saved = await Message.create({
+        appointmentId,
+        senderType,
+        senderId: access.user._id,
+        replyTo: replyDoc ? replyDoc._id : null,
+        e2ee: true,
+        e2eeVersion: Number.isFinite(v) && v >= 1 ? v : 1,
+        e2eeAlg: alg || "x25519-xsalsa20-poly1305",
+        e2eeNonce: nonce,
+        e2eeCiphertext: ciphertext,
+        encrypted: true,
+      });
+
+      const payload = {
+        _id: saved._id,
+        appointmentId,
+        senderType,
+        senderId: access.user._id,
+        text: "",
+        e2ee: {
+          v: saved.e2eeVersion,
+          alg: saved.e2eeAlg,
+          nonce: saved.e2eeNonce,
+          ciphertext: saved.e2eeCiphertext,
+        },
+        createdAt: saved.createdAt,
+        deleted: false,
+        replyTo: buildReplyMeta(replyDoc),
+      };
+
+      io.to(String(appointmentId)).emit("message", payload);
+      return;
+    }
+
+    // Legacy path: server-side encrypt at rest + broadcast plaintext for older clients.
+    if (!text) return;
     const encrypted = encrypt(String(text));
     const saved = await Message.create({
       appointmentId,
@@ -342,9 +403,10 @@ io.on("connection", (socket) => {
       replyTo: replyDoc ? replyDoc._id : null,
       text: encrypted,
       encrypted: true,
+      e2ee: false,
     });
 
-    const payload = {
+    io.to(String(appointmentId)).emit("message", {
       _id: saved._id,
       appointmentId,
       senderType,
@@ -353,9 +415,7 @@ io.on("connection", (socket) => {
       createdAt: saved.createdAt,
       deleted: false,
       replyTo: buildReplyMeta(replyDoc),
-    };
-
-    io.to(String(appointmentId)).emit("message", payload);
+    });
   });
 
   socket.on("deleteMessage", async ({ appointmentId, messageId }) => {

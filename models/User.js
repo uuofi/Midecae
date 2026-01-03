@@ -92,6 +92,13 @@ const userSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+
+    // E2EE chat public key (base64). Private key must never be stored on server.
+    chatPublicKey: {
+      type: String,
+      default: "",
+      trim: true,
+    },
   },
   { timestamps: true }
 );

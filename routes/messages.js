@@ -6,8 +6,10 @@ const multer = require("multer");
 const authMiddleware = require("../middleware/authMiddleware");
 const Appointment = require("../models/Appointment");
 const Message = require("../models/Message");
+const AuditLog = require("../models/AuditLog");
 const DoctorProfile = require("../models/DoctorProfile");
 const Block = require("../models/Block");
+const User = require("../models/User");
 
 const router = express.Router();
 const ALGO = "aes-256-gcm";
@@ -102,24 +104,113 @@ const canAccessAppointment = async (user, appointmentId) => {
 const mapMessage = (doc) => {
   const base = doc || {};
   const replyDoc = base.replyTo || null;
+
+  const mapContent = (m) => {
+    if (!m) return { text: "", e2ee: null };
+    if (m.deleted) return { text: "", e2ee: null };
+
+    if (m.e2ee) {
+      return {
+        text: "",
+        e2ee: {
+          v: typeof m.e2eeVersion === "number" ? m.e2eeVersion : 1,
+          alg: m.e2eeAlg || "x25519-xsalsa20-poly1305",
+          nonce: m.e2eeNonce || "",
+          ciphertext: m.e2eeCiphertext || "",
+        },
+      };
+    }
+
+    return {
+      text: decrypt(m.text),
+      e2ee: null,
+    };
+  };
+
+  const content = mapContent(base);
+  const replyContent = replyDoc ? mapContent(replyDoc) : null;
+
   return {
     _id: base._id,
     appointmentId: base.appointmentId,
     senderType: base.senderType,
     senderId: base.senderId,
-    text: base.deleted ? "" : decrypt(base.text),
+    text: content.text,
+    e2ee: content.e2ee,
     createdAt: base.createdAt,
     deleted: !!base.deleted,
     replyTo: replyDoc
       ? {
           _id: replyDoc._id,
-          text: replyDoc.deleted ? "" : decrypt(replyDoc.text),
+          text: replyContent?.text || "",
+          e2ee: replyContent?.e2ee || null,
           senderType: replyDoc.senderType,
           deleted: !!replyDoc.deleted,
         }
       : null,
   };
 };
+
+// Save/rotate current user's E2EE public key
+router.put("/e2ee/key", authMiddleware, async (req, res) => {
+  try {
+    const publicKey = String(req.body?.publicKey || "").trim();
+    if (!publicKey) {
+      return res.status(400).json({ message: "publicKey is required" });
+    }
+    if (publicKey.length > 300) {
+      return res.status(400).json({ message: "publicKey is too long" });
+    }
+
+    const user = await User.findById(req.user.id);
+    if (!user) return res.status(404).json({ message: "المستخدم غير موجود" });
+
+    user.chatPublicKey = publicKey;
+    await user.save();
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ message: "Server error" });
+  }
+});
+
+// Fetch the E2EE public keys for both participants of an appointment chat
+router.get("/:appointmentId/e2ee/keys", authMiddleware, async (req, res) => {
+  try {
+    const appointmentId = req.params.appointmentId;
+    const appointment = await canAccessAppointment(req.user, appointmentId);
+    if (!appointment) {
+      return res.status(403).json({ message: "Not authorized" });
+    }
+
+    const doctorUserId = String(appointment.doctorProfile?.user || "");
+    const patientUserId = String(appointment.user?._id || "");
+    if (!doctorUserId || !patientUserId) {
+      return res.status(400).json({ message: "Missing participants" });
+    }
+
+    const users = await User.find({ _id: { $in: [doctorUserId, patientUserId] } }).select(
+      "_id chatPublicKey"
+    );
+    const byId = new Map(users.map((u) => [String(u._id), u]));
+
+    const meId = String(req.user.id);
+    const otherId = meId === doctorUserId ? patientUserId : doctorUserId;
+
+    return res.json({
+      appointmentId: String(appointmentId),
+      me: {
+        userId: meId,
+        publicKey: String(byId.get(meId)?.chatPublicKey || ""),
+      },
+      other: {
+        userId: otherId,
+        publicKey: String(byId.get(otherId)?.chatPublicKey || ""),
+      },
+    });
+  } catch (err) {
+    return res.status(500).json({ message: "Server error" });
+  }
+});
 
 router.get("/:appointmentId", authMiddleware, async (req, res) => {
   try {
@@ -142,17 +233,14 @@ router.get("/:appointmentId", authMiddleware, async (req, res) => {
 router.post("/:appointmentId", authMiddleware, async (req, res) => {
   try {
     const appointmentId = req.params.appointmentId;
-    const { text, replyTo } = req.body || {};
-    if (!text || !text.trim()) {
-      return res.status(400).json({ message: "Message is required" });
-    }
+    const { text, replyTo, e2ee } = req.body || {};
     const appointment = await canAccessAppointment(req.user, appointmentId);
     if (!appointment) {
       return res.status(403).json({ message: "Not authorized" });
     }
     // Admin/doctor-level chat control
     if (req.user.role === "doctor") {
-      const profile = await DoctorProfile.findOne({ user: req.user._id }).select("isChatEnabled");
+      const profile = await DoctorProfile.findOne({ user: req.user.id }).select("isChatEnabled");
       if (profile && profile.isChatEnabled === false) {
         return res.status(403).json({ message: "تم تعطيل المحادثة لهذا الطبيب" });
       }
@@ -176,15 +264,52 @@ router.post("/:appointmentId", authMiddleware, async (req, res) => {
       }
     }
     const senderType = req.user.role === "doctor" ? "doctor" : "patient";
-    const encrypted = encrypt(text.trim());
-    const message = await Message.create({
-      appointmentId,
-      senderType,
-      senderId: req.user._id,
-      replyTo: replyDoc ? replyDoc._id : null,
-      text: encrypted,
-      encrypted: true,
-    });
+
+    let message;
+
+    // E2EE message: store ciphertext only.
+    if (e2ee && typeof e2ee === "object") {
+      const nonce = String(e2ee.nonce || "").trim();
+      const ciphertext = String(e2ee.ciphertext || "").trim();
+      const alg = String(e2ee.alg || "x25519-xsalsa20-poly1305").trim();
+      const vRaw = e2ee.v;
+      const v = typeof vRaw === "number" ? vRaw : Number(vRaw || 1);
+
+      if (!nonce || !ciphertext) {
+        return res.status(400).json({ message: "Invalid e2ee payload" });
+      }
+      if (nonce.length > 200 || ciphertext.length > 50000) {
+        return res.status(400).json({ message: "e2ee payload too large" });
+      }
+
+      message = await Message.create({
+        appointmentId,
+        senderType,
+        senderId: req.user.id,
+        replyTo: replyDoc ? replyDoc._id : null,
+        e2ee: true,
+        e2eeVersion: Number.isFinite(v) && v >= 1 ? v : 1,
+        e2eeAlg: alg || "x25519-xsalsa20-poly1305",
+        e2eeNonce: nonce,
+        e2eeCiphertext: ciphertext,
+        encrypted: true,
+      });
+    } else {
+      // Legacy (server-side) encryption
+      if (!text || !String(text).trim()) {
+        return res.status(400).json({ message: "Message is required" });
+      }
+      const encrypted = encrypt(String(text).trim());
+      message = await Message.create({
+        appointmentId,
+        senderType,
+        senderId: req.user.id,
+        replyTo: replyDoc ? replyDoc._id : null,
+        text: encrypted,
+        encrypted: true,
+        e2ee: false,
+      });
+    }
     const populated = await Message.findById(message._id).populate("replyTo");
     res.status(201).json({
       message: mapMessage(populated),
@@ -205,7 +330,7 @@ router.post("/:appointmentId/upload", authMiddleware, async (req, res) => {
 
     // Admin/doctor-level chat control
     if (req.user.role === "doctor") {
-      const profile = await DoctorProfile.findOne({ user: req.user._id }).select(
+      const profile = await DoctorProfile.findOne({ user: req.user.id }).select(
         "isChatEnabled"
       );
       if (profile && profile.isChatEnabled === false) {
@@ -264,6 +389,54 @@ router.delete("/:appointmentId/:messageId", authMiddleware, async (req, res) => 
     res.json({ messageId });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
+  }
+});
+
+// Report a message (UGC moderation). Stores an audit log entry for review.
+router.post("/:appointmentId/:messageId/report", authMiddleware, async (req, res) => {
+  try {
+    const { appointmentId, messageId } = req.params;
+    const { reason } = req.body || {};
+
+    const appointment = await canAccessAppointment(req.user, appointmentId);
+    if (!appointment) {
+      return res.status(403).json({ message: "Not authorized" });
+    }
+
+    const message = await Message.findById(messageId).select(
+      "_id appointmentId senderType senderId createdAt deleted"
+    );
+    if (!message || String(message.appointmentId) !== String(appointmentId)) {
+      return res.status(404).json({ message: "Message not found" });
+    }
+
+    const safeReason = String(reason || "").trim().slice(0, 500);
+    const forwarded = req.headers["x-forwarded-for"];
+    const ip = Array.isArray(forwarded)
+      ? forwarded[0]
+      : String(forwarded || req.ip || "").split(",")[0].trim();
+
+    await AuditLog.create({
+      actorUser: req.user.id,
+      actorName: String(req.user?.name || req.user?.fullName || "").trim(),
+      action: "REPORT_MESSAGE",
+      entityType: "Message",
+      entityId: String(messageId),
+      entityName: String(appointmentId),
+      details: JSON.stringify({
+        appointmentId: String(appointmentId),
+        messageId: String(messageId),
+        messageSenderType: message.senderType,
+        messageSenderId: String(message.senderId || ""),
+        messageDeleted: !!message.deleted,
+        reason: safeReason,
+      }),
+      ip,
+    });
+
+    return res.json({ ok: true });
+  } catch (err) {
+    return res.status(500).json({ message: "Server error" });
   }
 });
 

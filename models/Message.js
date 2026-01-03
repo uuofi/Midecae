@@ -26,12 +26,42 @@ const messageSchema = new mongoose.Schema(
     },
     text: {
       type: String,
-      required: true,
+      required: function () {
+        return !this.e2ee;
+      },
       trim: true,
     },
     encrypted: {
       type: Boolean,
       default: true,
+    },
+
+    // End-to-end encryption payload (client-side).
+    // When e2ee=true, the server MUST NOT decrypt or re-encrypt content.
+    e2ee: {
+      type: Boolean,
+      default: false,
+      index: true,
+    },
+    e2eeVersion: {
+      type: Number,
+      default: 1,
+      min: 1,
+    },
+    e2eeAlg: {
+      type: String,
+      default: "x25519-xsalsa20-poly1305",
+      trim: true,
+    },
+    e2eeNonce: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    e2eeCiphertext: {
+      type: String,
+      default: "",
+      trim: true,
     },
     deleted: {
       type: Boolean,

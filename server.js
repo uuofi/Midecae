@@ -319,107 +319,117 @@ io.on("connection", (socket) => {
   });
 
   socket.on("message", async ({ appointmentId, text, replyTo, e2ee }) => {
-    if (!appointmentId) return;
-    const access = await canAccessAppointment(socket.userId, appointmentId);
-    if (!access) return socket.emit("error", AUTH_ERROR);
+    try {
+      if (!appointmentId) return;
+      const access = await canAccessAppointment(socket.userId, appointmentId);
+      if (!access) return socket.emit("error", AUTH_ERROR);
 
-    const senderType = access.user.role === "doctor" ? "doctor" : "patient";
+      const senderType = access.user.role === "doctor" ? "doctor" : "patient";
 
-    // Admin/doctor-level chat control
-    if (senderType === "doctor") {
-      const profile = await DoctorProfileModel.findOne({ user: access.user._id }).select("isChatEnabled");
-      if (profile && profile.isChatEnabled === false) {
-        return socket.emit("error", "تم تعطيل المحادثة لهذا الطبيب");
+      // Admin/doctor-level chat control
+      if (senderType === "doctor") {
+        const profile = await DoctorProfileModel.findOne({ user: access.user._id }).select("isChatEnabled");
+        if (profile && profile.isChatEnabled === false) {
+          return socket.emit("error", "تم تعطيل المحادثة لهذا الطبيب");
+        }
       }
-    }
 
-    // Block chat if doctor blocked patient
-    const doctorUserId = access.appointment?.doctorProfile?.user;
-    const patientUserId = access.appointment?.user?._id;
-    if (senderType === "patient" && doctorUserId && patientUserId) {
-      const block = await Block.findOne({
-        doctor: doctorUserId,
-        patient: patientUserId,
-      });
-      if (block?.blockChat) {
-        return socket.emit("error", "تم حظر المراسلة من هذا الطبيب");
+      // Block chat if doctor blocked patient
+      const doctorUserId = access.appointment?.doctorProfile?.user;
+      const patientUserId = access.appointment?.user?._id;
+      if (senderType === "patient" && doctorUserId && patientUserId) {
+        const block = await Block.findOne({
+          doctor: doctorUserId,
+          patient: patientUserId,
+        });
+        if (block?.blockChat) {
+          return socket.emit("error", "تم حظر المراسلة من هذا الطبيب");
+        }
       }
-    }
-    let replyDoc = null;
-    if (replyTo) {
-      replyDoc = await Message.findById(replyTo);
-      if (!replyDoc || String(replyDoc.appointmentId) !== String(appointmentId)) {
-        return socket.emit("error", "Invalid reply target");
+
+      let replyDoc = null;
+      if (replyTo) {
+        replyDoc = await Message.findById(replyTo);
+        if (!replyDoc || String(replyDoc.appointmentId) !== String(appointmentId)) {
+          return socket.emit("error", "Invalid reply target");
+        }
       }
-    }
 
-    // E2EE path (preferred): store ciphertext + broadcast ciphertext only.
-    if (e2ee && typeof e2ee === "object") {
-      const nonce = String(e2ee.nonce || "").trim();
-      const ciphertext = String(e2ee.ciphertext || "").trim();
-      const alg = String(e2ee.alg || "x25519-xsalsa20-poly1305").trim();
-      const vRaw = e2ee.v;
-      const v = typeof vRaw === "number" ? vRaw : Number(vRaw || 1);
+      // E2EE path (preferred): store ciphertext + broadcast ciphertext only.
+      if (e2ee && typeof e2ee === "object") {
+        const nonce = String(e2ee.nonce || "").trim();
+        const ciphertext = String(e2ee.ciphertext || "").trim();
+        const alg = String(e2ee.alg || "x25519-xsalsa20-poly1305").trim();
+        const vRaw = e2ee.v;
+        const v = typeof vRaw === "number" ? vRaw : Number(vRaw || 1);
 
-      if (!nonce || !ciphertext) return;
+        if (!nonce || !ciphertext) return;
 
+        const saved = await Message.create({
+          appointmentId,
+          senderType,
+          senderId: access.user._id,
+          replyTo: replyDoc ? replyDoc._id : null,
+          e2ee: true,
+          e2eeVersion: Number.isFinite(v) && v >= 1 ? v : 1,
+          e2eeAlg: alg || "x25519-xsalsa20-poly1305",
+          e2eeNonce: nonce,
+          e2eeCiphertext: ciphertext,
+          encrypted: true,
+        });
+
+        const payload = {
+          _id: saved._id,
+          appointmentId,
+          senderType,
+          senderId: access.user._id,
+          text: "",
+          e2ee: {
+            v: saved.e2eeVersion,
+            alg: saved.e2eeAlg,
+            nonce: saved.e2eeNonce,
+            ciphertext: saved.e2eeCiphertext,
+          },
+          createdAt: saved.createdAt,
+          deleted: false,
+          replyTo: buildReplyMeta(replyDoc),
+        };
+
+        io.to(String(appointmentId)).emit("message", payload);
+        return;
+      }
+
+      // Legacy path: server-side encrypt at rest + broadcast plaintext for older clients.
+      if (!text) return;
+      if (!isLegacyMessageCryptoConfigured()) {
+        return socket.emit("error", "Server misconfigured: MESSAGE_KEY is missing");
+      }
+
+      const encrypted = encrypt(String(text));
       const saved = await Message.create({
         appointmentId,
         senderType,
         senderId: access.user._id,
         replyTo: replyDoc ? replyDoc._id : null,
-        e2ee: true,
-        e2eeVersion: Number.isFinite(v) && v >= 1 ? v : 1,
-        e2eeAlg: alg || "x25519-xsalsa20-poly1305",
-        e2eeNonce: nonce,
-        e2eeCiphertext: ciphertext,
+        text: encrypted,
         encrypted: true,
+        e2ee: false,
       });
 
-      const payload = {
+      io.to(String(appointmentId)).emit("message", {
         _id: saved._id,
         appointmentId,
         senderType,
         senderId: access.user._id,
-        text: "",
-        e2ee: {
-          v: saved.e2eeVersion,
-          alg: saved.e2eeAlg,
-          nonce: saved.e2eeNonce,
-          ciphertext: saved.e2eeCiphertext,
-        },
+        text,
         createdAt: saved.createdAt,
         deleted: false,
         replyTo: buildReplyMeta(replyDoc),
-      };
-
-      io.to(String(appointmentId)).emit("message", payload);
-      return;
+      });
+    } catch (err) {
+      console.error("Socket message handler error:", err?.message);
+      return socket.emit("error", "Server error");
     }
-
-    // Legacy path: server-side encrypt at rest + broadcast plaintext for older clients.
-    if (!text) return;
-    const encrypted = encrypt(String(text));
-    const saved = await Message.create({
-      appointmentId,
-      senderType,
-      senderId: access.user._id,
-      replyTo: replyDoc ? replyDoc._id : null,
-      text: encrypted,
-      encrypted: true,
-      e2ee: false,
-    });
-
-    io.to(String(appointmentId)).emit("message", {
-      _id: saved._id,
-      appointmentId,
-      senderType,
-      senderId: access.user._id,
-      text,
-      createdAt: saved.createdAt,
-      deleted: false,
-      replyTo: buildReplyMeta(replyDoc),
-    });
   });
 
   socket.on("deleteMessage", async ({ appointmentId, messageId }) => {

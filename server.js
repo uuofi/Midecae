@@ -441,5 +441,10 @@ io.on("connection", (socket) => {
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`Server running on port ${PORT}`);
-  startReminderJobs();
+  const disableReminders = String(process.env.DISABLE_REMINDERS || "").toLowerCase() === "true";
+  if (disableReminders) {
+    console.log("Reminder jobs are disabled (DISABLE_REMINDERS=true)");
+  } else {
+    startReminderJobs();
+  }
 });

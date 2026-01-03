@@ -301,8 +301,19 @@ router.post("/:appointmentId", authMiddleware, async (req, res) => {
       });
     }
     const populated = await Message.findById(message._id).populate("replyTo");
+    const mapped = mapMessage(populated);
+
+    // Broadcast to room for real-time delivery (covers REST fallback when sender socket is offline)
+    try {
+      const io = req.app.get("io");
+      if (io) {
+        io.to(String(appointmentId)).emit("message", mapped);
+      }
+    } catch (e) {
+      // ignore broadcast failures
+    }
     res.status(201).json({
-      message: mapMessage(populated),
+      message: mapped,
     });
   } catch (err) {
     res.status(500).json({ message: "Server error" });
@@ -376,6 +387,19 @@ router.delete("/:appointmentId/:messageId", authMiddleware, async (req, res) => 
     message.deleted = true;
     message.deletedAt = new Date();
     await message.save();
+
+    // Broadcast deletion for real-time sync
+    try {
+      const io = req.app.get("io");
+      if (io) {
+        io.to(String(appointmentId)).emit("messageDeleted", {
+          _id: String(messageId),
+          appointmentId: String(appointmentId),
+        });
+      }
+    } catch (e) {
+      // ignore broadcast failures
+    }
     res.json({ messageId });
   } catch (err) {
     res.status(500).json({ message: "Server error" });

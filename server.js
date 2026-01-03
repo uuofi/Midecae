@@ -226,6 +226,9 @@ const io = new Server(server, {
   transports: ["websocket", "polling"],
 });
 
+// Make io accessible from routes (REST fallback can broadcast real-time updates)
+app.set("io", io);
+
 const AUTH_ERROR = "Unauthorized";
 const encrypt = (plain) => encryptAtRest(plain);
 const decrypt = (payload) => decryptAtRest(payload);

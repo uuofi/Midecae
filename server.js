@@ -19,9 +19,27 @@ const Block = require("./models/Block");
 const DoctorProfileModel = require("./models/DoctorProfile");
 const { startReminderJobs } = require("./jobs/reminders");
 const authMiddleware = require("./middleware/authMiddleware");
+const { encryptAtRest, decryptAtRest, isLegacyMessageCryptoConfigured } = require("./utils/messageCrypto");
 
 dotenv.config();
 connectDB();
+
+// Fail fast on missing critical secrets in production.
+if (String(process.env.NODE_ENV || "").toLowerCase() === "production") {
+  if (!process.env.JWT_SECRET) {
+    console.error("JWT_SECRET is missing in production");
+    process.exit(1);
+  }
+  const rawMsgKey = String(process.env.MESSAGE_KEY || "");
+  if (!rawMsgKey) {
+    console.error("MESSAGE_KEY is missing in production");
+    process.exit(1);
+  }
+  if (rawMsgKey.length < 32) {
+    console.error("MESSAGE_KEY is too short in production (must be >= 32 chars)");
+    process.exit(1);
+  }
+}
 
 const app = express();
 const server = http.createServer(app);
@@ -209,35 +227,8 @@ const io = new Server(server, {
 });
 
 const AUTH_ERROR = "Unauthorized";
-const ALGO = "aes-256-gcm";
-const crypto = require("crypto");
-const KEY = (process.env.MESSAGE_KEY || "").slice(0, 32).padEnd(32, "0");
-
-const encrypt = (plain) => {
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv(ALGO, KEY, iv);
-  const enc = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return `${iv.toString("hex")}.${enc.toString("hex")}.${tag.toString("hex")}`;
-};
-
-const decrypt = (payload) => {
-  try {
-    const [ivHex, dataHex, tagHex] = String(payload || "").split(".");
-    if (!ivHex || !dataHex || !tagHex) return "";
-    const iv = Buffer.from(ivHex, "hex");
-    const tag = Buffer.from(tagHex, "hex");
-    const decipher = crypto.createDecipheriv(ALGO, KEY, iv);
-    decipher.setAuthTag(tag);
-    const dec = Buffer.concat([
-      decipher.update(Buffer.from(dataHex, "hex")),
-      decipher.final(),
-    ]);
-    return dec.toString("utf8");
-  } catch (err) {
-    return "";
-  }
-};
+const encrypt = (plain) => encryptAtRest(plain);
+const decrypt = (payload) => decryptAtRest(payload);
 
 const buildReplyMeta = (replyDoc) => {
   if (!replyDoc) return null;
@@ -283,8 +274,21 @@ io.use(async (socket, next) => {
       socket.handshake.headers.authorization?.replace("Bearer ", "");
     if (!token) return next(new Error(AUTH_ERROR));
     const payload = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(payload.id).select("role");
+
+    // Reject refresh tokens for socket access
+    if (payload?.typ && payload.typ !== "access") {
+      return next(new Error(AUTH_ERROR));
+    }
+
+    const user = await User.findById(payload.id).select("role tokenVersion");
     if (!user) return next(new Error(AUTH_ERROR));
+
+    // Enforce tokenVersion (logout-all / password-change invalidation)
+    const tokenVer = typeof payload?.ver === "number" ? payload.ver : 0;
+    const userVer = typeof user?.tokenVersion === "number" ? user.tokenVersion : 0;
+    if (tokenVer !== userVer) {
+      return next(new Error(AUTH_ERROR));
+    }
 
     if (user.role === "doctor") {
       const profile = await DoctorProfileModel.findOne({ user: user._id }).select(

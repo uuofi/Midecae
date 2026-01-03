@@ -230,8 +230,6 @@ const router = express.Router();
  * @access Private
  */
 router.post("/", authMiddleware, async (req, res) => {
-    // Debug: طباعة بيانات الحجز القادمة من الواجهة
-    console.log("[حجز] بيانات الطلب:", req.body);
   try {
     const {
       doctorName,

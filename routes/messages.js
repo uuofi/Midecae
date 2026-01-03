@@ -12,8 +12,7 @@ const Block = require("../models/Block");
 const User = require("../models/User");
 
 const router = express.Router();
-const ALGO = "aes-256-gcm";
-const KEY = (process.env.MESSAGE_KEY || "").slice(0, 32).padEnd(32, "0");
+const { encryptAtRest, decryptAtRest, isLegacyMessageCryptoConfigured } = require("../utils/messageCrypto");
 
 const uploadsDir = path.join(__dirname, "..", "uploads", "messages");
 try {
@@ -41,15 +40,25 @@ const upload = multer({
   storage: multer.diskStorage({
     destination: (req, file, cb) => cb(null, uploadsDir),
     filename: (req, file, cb) => {
-      const appointmentId = String(req.params.appointmentId || "unknown");
       const ext = inferImageExt(file?.mimetype, file?.originalname);
       const rand = crypto.randomBytes(8).toString("hex");
-      cb(null, `chat-${appointmentId}-${Date.now()}-${rand}${ext}`);
+      cb(null, `chat-${Date.now()}-${rand}${ext}`);
     },
   }),
   fileFilter: (req, file, cb) => {
     const mt = String(file?.mimetype || "").toLowerCase();
-    if (mt.startsWith("image/")) return cb(null, true);
+    // Block SVG (scriptable) and restrict to common raster formats.
+    if (mt === "image/svg+xml") return cb(new Error("SVG uploads are not allowed"), false);
+    const allowed = new Set([
+      "image/jpeg",
+      "image/jpg",
+      "image/png",
+      "image/gif",
+      "image/webp",
+      "image/heic",
+      "image/heif",
+    ]);
+    if (allowed.has(mt)) return cb(null, true);
     return cb(new Error("Only image uploads are allowed"), false);
   },
   limits: {
@@ -57,31 +66,8 @@ const upload = multer({
   },
 });
 
-const encrypt = (plain) => {
-  const iv = crypto.randomBytes(12);
-  const cipher = crypto.createCipheriv(ALGO, KEY, iv);
-  const enc = Buffer.concat([cipher.update(plain, "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return `${iv.toString("hex")}.${enc.toString("hex")}.${tag.toString("hex")}`;
-};
-
-const decrypt = (payload) => {
-  try {
-    const [ivHex, dataHex, tagHex] = String(payload || "").split(".");
-    if (!ivHex || !dataHex || !tagHex) return "";
-    const iv = Buffer.from(ivHex, "hex");
-    const tag = Buffer.from(tagHex, "hex");
-    const decipher = crypto.createDecipheriv(ALGO, KEY, iv);
-    decipher.setAuthTag(tag);
-    const dec = Buffer.concat([
-      decipher.update(Buffer.from(dataHex, "hex")),
-      decipher.final(),
-    ]);
-    return dec.toString("utf8");
-  } catch (err) {
-    return "";
-  }
-};
+const encrypt = (plain) => encryptAtRest(plain);
+const decrypt = (payload) => decryptAtRest(payload);
 
 const canAccessAppointment = async (user, appointmentId) => {
   const appointment = await Appointment.findById(appointmentId)
@@ -232,6 +218,10 @@ router.get("/:appointmentId", authMiddleware, async (req, res) => {
 
 router.post("/:appointmentId", authMiddleware, async (req, res) => {
   try {
+    // Legacy at-rest crypto is required for plaintext chat messages.
+    if (!isLegacyMessageCryptoConfigured() && !(req.body && req.body.e2ee)) {
+      return res.status(500).json({ message: "Server misconfigured: MESSAGE_KEY is missing" });
+    }
     const appointmentId = req.params.appointmentId;
     const { text, replyTo, e2ee } = req.body || {};
     const appointment = await canAccessAppointment(req.user, appointmentId);

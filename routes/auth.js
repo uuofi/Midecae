@@ -247,10 +247,7 @@ router.post("/register", registerLimiter, async (req, res) => {
 
     const hashed = await bcrypt.hash(password, 12);
 
-    // كود تفعيل 6 أرقام
-    // كود التحقق هو آخر 10 أرقام من رقم الهاتف (يبدأ من 7)
-    // كود تفعيل 6 أرقام عشوائي
-    const verificationCode = Math.floor(100000 + Math.random() * 900000).toString();
+    // OTP is currently disabled; do not generate or log verification codes.
 
     const doctorSafeName = role === "doctor" ? ensureDoctorPrefix(name) : name;
 
@@ -303,10 +300,6 @@ router.post("/register", registerLimiter, async (req, res) => {
       await user.save();
     }
 
-
-
-    // طباعة كود التحقق في التيرمنال
-    console.log(`OTP for ${user.phone}: ${verificationCode}`);
 
           // OTP is disabled.
           // Patients can login immediately; doctors remain pending until admin approval.

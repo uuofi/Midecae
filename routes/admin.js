@@ -170,7 +170,7 @@ router.get(
       if (status) filter.status = status;
 
       const doctors = await DoctorProfile.find(filter)
-        .populate("user", "name email phone createdAt verificationCode loginCode")
+        .populate("user", "name email phone createdAt")
         .sort({ createdAt: -1 });
 
       return res.json({ doctors });
@@ -195,7 +195,7 @@ router.get(
 
       const doctor = await DoctorProfile.findById(id).populate(
         "user",
-        "name email phone createdAt verificationCode loginCode role"
+        "name email phone createdAt role"
       );
       if (!doctor) return res.status(404).json({ message: "Doctor not found" });
 
